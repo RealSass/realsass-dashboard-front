@@ -1,5 +1,5 @@
 export const siteConfig = {
-  name:        'TodoApple',
-  description: 'Dashboard de gestión Apple SaaS',
+  name:        'Propiedad Dashboard',
+  description: 'Plataforma de gestión inmobiliaria SaaS',
   locale:      'es-AR',
 } as const;

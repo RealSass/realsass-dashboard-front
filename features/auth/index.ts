@@ -1,4 +1,2 @@
-export * from './hooks';
-export * from './components';
-export * from './types';
-export { AuthProvider } from './context/auth-context';
+export { AuthProvider, useAuth } from './context/auth-context';
+export type { DashboardUser } from './context/auth-context';

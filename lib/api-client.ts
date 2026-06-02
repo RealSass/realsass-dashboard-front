@@ -1,34 +1,10 @@
+// lib/api-client.ts
+// ─── Cliente HTTP multi-sistema — Firebase Auth + x-api-key para config ───────
+import { getIdToken } from '@/lib/firebase';
 import { API_URLS, type ApiSystem } from '@/config/constants';
 import type { ApiError } from '@/types/api';
 
-// ─── Token storage helpers ─────────────────────────────────────────────────────
-
-export const getAccessToken = (): string | null =>
-  typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
-
-export const getRefreshToken = (): string | null =>
-  typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
-
-export const saveTokens = (tokens: { accessToken: string; refreshToken: string }): void => {
-  localStorage.setItem('accessToken', tokens.accessToken);
-  localStorage.setItem('refreshToken', tokens.refreshToken);
-};
-
-export const clearTokens = (): void => {
-  localStorage.removeItem('accessToken');
-  localStorage.removeItem('refreshToken');
-};
-
-// ─── Unwrap { success, data: T } or plain T ────────────────────────────────────
-
-function unwrap<T>(json: unknown): T {
-  if (json && typeof json === 'object' && 'data' in (json as object)) {
-    return (json as { data: T }).data;
-  }
-  return json as T;
-}
-
-// ─── Build query string ───────────────────────────────────────────────────────
+export type { ApiSystem };
 
 export function buildQuery(filters: Record<string, unknown>): string {
   const params = new URLSearchParams();
@@ -40,59 +16,68 @@ export function buildQuery(filters: Record<string, unknown>): string {
   return params.toString() ? `?${params.toString()}` : '';
 }
 
-// ─── Token refresh ────────────────────────────────────────────────────────────
-
-async function tryRefreshToken(): Promise<boolean> {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) return false;
-  try {
-    const response = await fetch(`${API_URLS.dashboard}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken }),
-    });
-    if (!response.ok) return false;
-    const json = await response.json();
-    const tokens = (json as { data?: { accessToken: string; refreshToken: string } })?.data ?? json;
-    saveTokens(tokens as { accessToken: string; refreshToken: string });
-    return true;
-  } catch {
-    return false;
+function unwrap<T>(json: unknown): T {
+  if (json && typeof json === 'object' && 'data' in (json as object)) {
+    return (json as { data: T }).data;
   }
+  return json as T;
 }
 
-// ─── Core fetch ───────────────────────────────────────────────────────────────
-
+/**
+ * Fetch principal. El sistema 'config' usa x-api-key en lugar de Bearer.
+ * Todos los demás sistemas usan Authorization: Bearer <firebase-token>.
+ */
 async function coreFetch<T>(
   system: ApiSystem,
   endpoint: string,
-  options: RequestInit = {},
+  options: RequestInit & { organizationId?: string } = {},
+  _retry = true,
 ): Promise<T> {
   const baseUrl = API_URLS[system];
-  const accessToken = getAccessToken();
+  if (!baseUrl) throw new Error(`Sistema "${system}" no configurado en variables de entorno`);
 
-  const buildHeaders = (token: string | null): Record<string, string> => ({
+  const { organizationId, ...fetchOptions } = options;
+
+  // ── Construir headers según sistema ──────────────────────────────────────────
+  let authHeaders: Record<string, string> = {};
+
+  if (system === 'config') {
+    // Config service usa x-api-key (ApiKeyGuard)
+    const apiKey = process.env.NEXT_PUBLIC_CONFIG_API_KEY;
+    if (!apiKey) throw new Error('NEXT_PUBLIC_CONFIG_API_KEY no configurado');
+    authHeaders = { 'x-api-key': apiKey };
+  } else {
+    // Resto de sistemas usan Firebase Bearer token
+    try {
+      const token = await getIdToken();
+      authHeaders = { Authorization: `Bearer ${token}` };
+    } catch {
+      if (typeof window !== 'undefined') window.location.href = '/login';
+      throw new Error('No autenticado');
+    }
+  }
+
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(options.headers as Record<string, string> | undefined),
-  });
+    ...authHeaders,
+    ...(organizationId ? { 'x-organization-id': organizationId } : {}),
+    ...(fetchOptions.headers as Record<string, string> | undefined),
+  };
 
   let response = await fetch(`${baseUrl}${endpoint}`, {
-    ...options,
-    headers: buildHeaders(accessToken),
+    ...fetchOptions,
+    headers,
   });
 
-  if (response.status === 401) {
-    const refreshed = await tryRefreshToken();
-    if (refreshed) {
-      response = await fetch(`${baseUrl}${endpoint}`, {
-        ...options,
-        headers: buildHeaders(getAccessToken()),
-      });
-    } else {
-      clearTokens();
+  // ── Retry en 401 solo para sistemas con Firebase ──────────────────────────
+  if (response.status === 401 && _retry && system !== 'config') {
+    try {
+      const freshToken = await getIdToken(true);
+      headers.Authorization = `Bearer ${freshToken}`;
+      response = await fetch(`${baseUrl}${endpoint}`, { ...fetchOptions, headers });
+    } catch {
       if (typeof window !== 'undefined') window.location.href = '/login';
-      throw new Error('Sesion expirada') satisfies never;
+      throw new Error('Sesión expirada');
     }
   }
 
@@ -100,14 +85,15 @@ async function coreFetch<T>(
   try {
     json = await response.json();
   } catch {
-    if (!response.ok) throw new Error(`Error ${response.status}`) satisfies never;
+    if (!response.ok) throw new Error(`Error ${response.status}`);
     return undefined as T;
   }
 
   if (!response.ok) {
-    const apiError = json as Partial<ApiError> & { error?: string };
-    const msg = apiError.message ?? apiError.error ?? `Error ${response.status}`;
-    const err = new Error(msg) as Error & { statusCode?: number };
+    const apiError = json as Partial<ApiError> & { error?: string; message?: string | string[] };
+    const rawMsg   = apiError.message ?? apiError.error ?? `Error ${response.status}`;
+    const msg      = Array.isArray(rawMsg) ? rawMsg[0] : rawMsg;
+    const err      = new Error(msg) as Error & { statusCode?: number };
     err.statusCode = response.status;
     throw err;
   }
@@ -115,28 +101,25 @@ async function coreFetch<T>(
   return unwrap<T>(json);
 }
 
-// ─── Public API client ────────────────────────────────────────────────────────
-
 export const apiClient = {
-  get<T>(system: ApiSystem, endpoint: string): Promise<T> {
-    return coreFetch<T>(system, endpoint, { method: 'GET' });
+  get<T>(system: ApiSystem, endpoint: string, organizationId?: string): Promise<T> {
+    return coreFetch<T>(system, endpoint, { method: 'GET', organizationId });
   },
-
-  post<T>(system: ApiSystem, endpoint: string, body?: unknown): Promise<T> {
+  post<T>(system: ApiSystem, endpoint: string, body?: unknown, organizationId?: string): Promise<T> {
     return coreFetch<T>(system, endpoint, {
       method: 'POST',
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body:   body !== undefined ? JSON.stringify(body) : undefined,
+      organizationId,
     });
   },
-
-  patch<T>(system: ApiSystem, endpoint: string, body?: unknown): Promise<T> {
+  patch<T>(system: ApiSystem, endpoint: string, body?: unknown, organizationId?: string): Promise<T> {
     return coreFetch<T>(system, endpoint, {
       method: 'PATCH',
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body:   body !== undefined ? JSON.stringify(body) : undefined,
+      organizationId,
     });
   },
-
-  delete<T>(system: ApiSystem, endpoint: string): Promise<T> {
-    return coreFetch<T>(system, endpoint, { method: 'DELETE' });
+  delete<T>(system: ApiSystem, endpoint: string, organizationId?: string): Promise<T> {
+    return coreFetch<T>(system, endpoint, { method: 'DELETE', organizationId });
   },
 };
