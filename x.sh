@@ -1,23 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 4-dashboard-front.sh
-# Agrega app/auth/sso/page.tsx al dashboard-front.
-# Necesario cuando real-front y dashboard-front corren en DOMINIOS DISTINTOS
-# (localStorage no se comparte entre dominios).
-# Sin Python — solo cat.
-#
-# Flujo en multi-dominio:
-#   real-front → obtiene tokens del dashboard-back
-#   real-front → redirige a: dashboard-front.com/auth/sso?token=X&refresh=Y
-#   esta página → guarda tokens en localStorage del dashboard-front
-#   esta página → redirige a /dashboard
-#
-# USO:
-#   cd <raiz-de-dashboard-front>
-#   bash 4-dashboard-front.sh
+# 4-dashboard-front.sh  —  reescribe archivos completos, sin sed ni awk
+# USO: cd <raiz-de-dashboard-front> && bash 4-dashboard-front.sh
 # =============================================================================
 set -euo pipefail
-
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}  ✓  $*${NC}"; }
 warn() { echo -e "${YELLOW}  ⚠  $*${NC}"; }
@@ -34,50 +20,45 @@ echo -e "${NC}"
 [[ -d "app" ]]          || fail "No encontré el directorio app/"
 
 # ─── 1. Layout sin guard para /auth/* ────────────────────────────────────────
-step "1/3  app/auth/layout.tsx"
-
+step "1/2  app/auth/layout.tsx"
 mkdir -p app/auth
 
-if [[ -f "app/auth/layout.tsx" ]]; then
-  warn "app/auth/layout.tsx ya existe — saltando"
-else
-  cat > app/auth/layout.tsx << 'EOF'
+cat > app/auth/layout.tsx << 'EOF'
 // app/auth/layout.tsx
-// Layout para rutas de auth (/auth/sso, etc.)
-// No aplica guard de autenticación — es intencional.
+// Sin guard de autenticación — necesario para que /auth/sso sea accesible
+// sin token previo.
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 EOF
-  ok "app/auth/layout.tsx creado (sin guards)"
-fi
+ok "app/auth/layout.tsx"
 
 # ─── 2. Página /auth/sso ─────────────────────────────────────────────────────
-step "2/3  app/auth/sso/page.tsx"
-
+step "2/2  app/auth/sso/page.tsx"
 mkdir -p app/auth/sso
 
-if [[ -f "app/auth/sso/page.tsx" ]]; then
-  warn "app/auth/sso/page.tsx ya existe — saltando"
-else
-  cat > app/auth/sso/page.tsx << 'EOF'
+# IMPORTANTE: useSearchParams requiere Suspense en Next.js 13+
+# El componente interno usa useSearchParams; el default export lo envuelve en Suspense.
+cat > app/auth/sso/page.tsx << 'EOF'
 // app/auth/sso/page.tsx
-// Recibe tokens SSO por query params desde real-front,
+// Recibe accessToken + refreshToken por query params desde real-front,
 // los guarda en localStorage y redirige a /dashboard.
+//
+// Necesario cuando real-front y dashboard-front corren en dominios distintos
+// (localStorage no se comparte entre dominios).
 //
 // URL de entrada:
 //   /auth/sso?token=<accessToken>&refresh=<refreshToken>
-//
-// Necesario cuando ambas apps corren en dominios distintos.
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Loader2, CheckCircle, XCircle } from 'lucide-react';
 
 type State = 'processing' | 'success' | 'error';
 
-export default function SsoEntryPage() {
+// Componente interno que usa useSearchParams (debe estar dentro de Suspense)
+function SsoHandler() {
   const router       = useRouter();
   const searchParams = useSearchParams();
   const [state,  setState]  = useState<State>('processing');
@@ -124,7 +105,10 @@ export default function SsoEntryPage() {
           <XCircle className="h-10 w-10 text-destructive" />
           <p className="text-sm font-medium text-foreground">Error de autenticación</p>
           <p className="text-xs text-muted-foreground text-center max-w-xs">{errMsg}</p>
-          <button onClick={() => window.history.back()} className="mt-2 text-xs text-primary hover:underline">
+          <button
+            onClick={() => window.history.back()}
+            className="mt-2 text-xs text-primary hover:underline"
+          >
             Volver
           </button>
         </>
@@ -132,38 +116,44 @@ export default function SsoEntryPage() {
     </main>
   );
 }
+
+// Default export envuelto en Suspense — requerido por Next.js para useSearchParams
+export default function SsoEntryPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen flex flex-col items-center justify-center gap-4 bg-background">
+          <Loader2 className="h-10 w-10 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">Cargando...</p>
+        </main>
+      }
+    >
+      <SsoHandler />
+    </Suspense>
+  );
+}
 EOF
-  ok "app/auth/sso/page.tsx creado"
-fi
-
-# ─── 3. Actualizar hook en real-front (instrucciones) ────────────────────────
-step "3/3  Instrucciones para multi-dominio en real-front"
+ok "app/auth/sso/page.tsx"
 
 echo ""
-echo -e "${YELLOW}  Si real-front y dashboard-front corren en DOMINIOS DISTINTOS:${NC}"
-echo "  Editá hooks/use-dashboard-sso.ts en real-front."
-echo "  Reemplazá la línea del redirect:"
-echo ""
-echo "    // ANTES (mismo dominio — localStorage compartido):"
-echo "    window.location.href = \`\${DASHBOARD_FRONT_URL}/dashboard\`"
-echo ""
-echo "    // DESPUÉS (dominios distintos — pasar tokens por URL):"
-echo "    const ssoUrl = new URL(\`\${DASHBOARD_FRONT_URL}/auth/sso\`)"
-echo "    ssoUrl.searchParams.set('token',   tokens.accessToken)"
-echo "    ssoUrl.searchParams.set('refresh', tokens.refreshToken)"
-echo "    window.location.href = ssoUrl.toString()"
-echo ""
-echo -e "${YELLOW}  Si ambas apps corren en localhost (mismo dominio):${NC}"
-echo "  No hace falta tocar nada — el script 3-real-front.sh ya es suficiente."
-echo ""
-
 echo -e "${GREEN}══ dashboard-front listo ═════════════════════════════════════${NC}"
 echo "  Archivos creados:"
-echo "    app/auth/layout.tsx      (layout sin guards)"
-echo "    app/auth/sso/page.tsx    (entrada SSO por query params)"
+echo "    app/auth/layout.tsx"
+echo "    app/auth/sso/page.tsx  (con Suspense — fix del error de build)"
 echo ""
-echo "  Ruta disponible:"
-echo "    GET /auth/sso?token=<accessToken>&refresh=<refreshToken>"
+echo "  Ruta: GET /auth/sso?token=<accessToken>&refresh=<refreshToken>"
+echo ""
+echo "  Solo necesitás este script si real-front y dashboard-front"
+echo "  corren en DOMINIOS DISTINTOS. En localhost no hace falta."
+echo ""
+echo "  Si lo usás, actualizá hooks/use-dashboard-sso.ts en real-front:"
+echo "    Reemplazá:"
+echo "      window.location.href = DASHBOARD_FRONT_URL + '/dashboard'"
+echo "    Por:"
+echo "      const u = new URL(DASHBOARD_FRONT_URL + '/auth/sso')"
+echo "      u.searchParams.set('token',   tokens.accessToken)"
+echo "      u.searchParams.set('refresh', tokens.refreshToken)"
+echo "      window.location.href = u.toString()"
 echo ""
 echo "  → pnpm dev"
 echo ""

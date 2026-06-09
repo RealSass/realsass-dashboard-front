@@ -1,6 +1,6 @@
 // app/auth/layout.tsx
-// Layout para rutas de autenticación (/auth/sso, etc.)
-// NO aplica guards ni redireccionamientos — es intencional.
+// Sin guard de autenticación — necesario para que /auth/sso sea accesible
+// sin token previo.
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
