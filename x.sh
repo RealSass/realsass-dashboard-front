@@ -1,240 +1,169 @@
 #!/usr/bin/env bash
 # =============================================================================
-# fix-railway-dashboard-front.sh
+# 4-dashboard-front.sh
+# Agrega app/auth/sso/page.tsx al dashboard-front.
+# Necesario cuando real-front y dashboard-front corren en DOMINIOS DISTINTOS
+# (localStorage no se comparte entre dominios).
+# Sin Python — solo cat.
 #
-# Problema:  pnpm-workspace.yaml existe con solo "allowBuilds: sharp: true"
-#            sin campo "packages" → Railway activa el path de monorepo y falla
-#            con "packages field missing or empty".
-#
-# Solución:
-#   1. Elimina pnpm-workspace.yaml y mueve allowBuilds a .npmrc
-#   2. Inyecta output: 'standalone' en next.config.mjs (necesario para Dockerfile)
-#   3. Crea Dockerfile multi-stage (deps → builder → runner)
-#   4. Crea railway.json forzando builder Dockerfile
-#   5. Crea .dockerignore
-#   6. Regenera pnpm-lock.yaml limpio
+# Flujo en multi-dominio:
+#   real-front → obtiene tokens del dashboard-back
+#   real-front → redirige a: dashboard-front.com/auth/sso?token=X&refresh=Y
+#   esta página → guarda tokens en localStorage del dashboard-front
+#   esta página → redirige a /dashboard
 #
 # USO:
-#   chmod +x fix-railway-dashboard-front.sh
-#   ./fix-railway-dashboard-front.sh
-#
-# PREREQUISITO: estar en la raíz del proyecto real-dashboard-front con pnpm instalado.
+#   cd <raiz-de-dashboard-front>
+#   bash 4-dashboard-front.sh
 # =============================================================================
+set -euo pipefail
 
-set -e
-set -o pipefail
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; NC='\033[0m'
+ok()   { echo -e "${GREEN}  ✓  $*${NC}"; }
+warn() { echo -e "${YELLOW}  ⚠  $*${NC}"; }
+fail() { echo -e "${RED}  ✗  $*${NC}"; exit 1; }
+step() { echo -e "\n${BLUE}── $* ──────────────────────────────${NC}"; }
 
-BLUE='\033[0;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
-log()  { echo -e "${BLUE}[INFO]${NC}  $1"; }
-ok()   { echo -e "${GREEN}[OK]${NC}    $1"; }
-warn() { echo -e "${YELLOW}[WARN]${NC}  $1"; }
-err()  { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+echo -e "${BLUE}"
+echo "╔══════════════════════════════════════════╗"
+echo "║  dashboard-front — página entrada SSO    ║"
+echo "╚══════════════════════════════════════════╝"
+echo -e "${NC}"
 
-# ─── Validaciones ─────────────────────────────────────────────────────────────
-[ -f "package.json" ]         || err "Correr desde la raíz del proyecto real-dashboard-front"
-command -v pnpm &>/dev/null   || err "pnpm no encontrado. Instalar: npm i -g pnpm"
-grep -q '"next"' package.json || err "No parece ser un proyecto Next.js"
+[[ -f "package.json" ]] || fail "Corré desde la raíz de dashboard-front"
+[[ -d "app" ]]          || fail "No encontré el directorio app/"
 
-# ─── 1. Eliminar pnpm-workspace.yaml ─────────────────────────────────────────
-log "Paso 1 — Eliminando pnpm-workspace.yaml..."
+# ─── 1. Layout sin guard para /auth/* ────────────────────────────────────────
+step "1/3  app/auth/layout.tsx"
 
-if [ -f "pnpm-workspace.yaml" ]; then
-  rm pnpm-workspace.yaml
-  ok "pnpm-workspace.yaml eliminado"
+mkdir -p app/auth
+
+if [[ -f "app/auth/layout.tsx" ]]; then
+  warn "app/auth/layout.tsx ya existe — saltando"
 else
-  warn "pnpm-workspace.yaml no encontrado — ya fue eliminado"
+  cat > app/auth/layout.tsx << 'EOF'
+// app/auth/layout.tsx
+// Layout para rutas de auth (/auth/sso, etc.)
+// No aplica guard de autenticación — es intencional.
+export default function AuthLayout({ children }: { children: React.ReactNode }) {
+  return <>{children}</>;
+}
+EOF
+  ok "app/auth/layout.tsx creado (sin guards)"
 fi
 
-# ─── 2. Escribir .npmrc ───────────────────────────────────────────────────────
-log "Paso 2 — Escribiendo .npmrc..."
+# ─── 2. Página /auth/sso ─────────────────────────────────────────────────────
+step "2/3  app/auth/sso/page.tsx"
 
-cat > .npmrc << 'NPMRC'
-# Permite script de build para Sharp (procesamiento de imágenes Next.js)
-allow-build[]=sharp
-fund=false
-update-notifier=false
-NPMRC
+mkdir -p app/auth/sso
 
-ok ".npmrc escrito"
-
-# ─── 3. Inyectar output:standalone en next.config.mjs ────────────────────────
-log "Paso 3 — Agregando output:standalone a next.config.mjs..."
-
-CONFIG_FILE=""
-[ -f "next.config.mjs" ] && CONFIG_FILE="next.config.mjs"
-[ -f "next.config.ts"  ] && CONFIG_FILE="next.config.ts"
-[ -f "next.config.js"  ] && CONFIG_FILE="next.config.js"
-
-if [ -z "$CONFIG_FILE" ]; then
-  warn "No se encontró next.config — creando next.config.mjs mínimo con standalone"
-  cat > next.config.mjs << 'NEXTCONF'
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  output: 'standalone',
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-  images: {
-    unoptimized: true,
-  },
-}
-export default nextConfig
-NEXTCONF
-  ok "next.config.mjs creado"
+if [[ -f "app/auth/sso/page.tsx" ]]; then
+  warn "app/auth/sso/page.tsx ya existe — saltando"
 else
-  if grep -q "output.*standalone" "$CONFIG_FILE"; then
-    ok "output:standalone ya presente en $CONFIG_FILE"
-  else
-    # Inyectar como primera propiedad dentro de nextConfig = {
-    sed -i "s/const nextConfig = {/const nextConfig = {\n  output: 'standalone',/" "$CONFIG_FILE"
-    ok "output:standalone inyectado en $CONFIG_FILE"
-  fi
+  cat > app/auth/sso/page.tsx << 'EOF'
+// app/auth/sso/page.tsx
+// Recibe tokens SSO por query params desde real-front,
+// los guarda en localStorage y redirige a /dashboard.
+//
+// URL de entrada:
+//   /auth/sso?token=<accessToken>&refresh=<refreshToken>
+//
+// Necesario cuando ambas apps corren en dominios distintos.
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Loader2, CheckCircle, XCircle } from 'lucide-react';
+
+type State = 'processing' | 'success' | 'error';
+
+export default function SsoEntryPage() {
+  const router       = useRouter();
+  const searchParams = useSearchParams();
+  const [state,  setState]  = useState<State>('processing');
+  const [errMsg, setErrMsg] = useState('');
+
+  useEffect(() => {
+    const token   = searchParams.get('token');
+    const refresh = searchParams.get('refresh');
+
+    if (!token || !refresh) {
+      setState('error');
+      setErrMsg('Parámetros de autenticación faltantes. Volvé al sistema principal.');
+      return;
+    }
+
+    try {
+      localStorage.setItem('accessToken',  token);
+      localStorage.setItem('refreshToken', refresh);
+      setState('success');
+      // replace para no dejar /auth/sso en el historial
+      setTimeout(() => router.replace('/dashboard'), 600);
+    } catch {
+      setState('error');
+      setErrMsg('Error al guardar la sesión. Intentá nuevamente.');
+    }
+  }, [searchParams, router]);
+
+  return (
+    <main className="min-h-screen flex flex-col items-center justify-center gap-4 bg-background">
+      {state === 'processing' && (
+        <>
+          <Loader2 className="h-10 w-10 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">Iniciando sesión...</p>
+        </>
+      )}
+      {state === 'success' && (
+        <>
+          <CheckCircle className="h-10 w-10 text-emerald-500" />
+          <p className="text-sm text-muted-foreground">Sesión iniciada. Redirigiendo...</p>
+        </>
+      )}
+      {state === 'error' && (
+        <>
+          <XCircle className="h-10 w-10 text-destructive" />
+          <p className="text-sm font-medium text-foreground">Error de autenticación</p>
+          <p className="text-xs text-muted-foreground text-center max-w-xs">{errMsg}</p>
+          <button onClick={() => window.history.back()} className="mt-2 text-xs text-primary hover:underline">
+            Volver
+          </button>
+        </>
+      )}
+    </main>
+  );
+}
+EOF
+  ok "app/auth/sso/page.tsx creado"
 fi
 
-# ─── 4. Crear Dockerfile multi-stage ─────────────────────────────────────────
-log "Paso 4 — Creando Dockerfile..."
+# ─── 3. Actualizar hook en real-front (instrucciones) ────────────────────────
+step "3/3  Instrucciones para multi-dominio en real-front"
 
-cat > Dockerfile << 'DOCKERFILE'
-# =============================================================================
-# Dockerfile — real-dashboard-front (Next.js)
-# Multi-stage: deps → builder → runner
-# =============================================================================
-
-# ── Stage 1: dependencias ────────────────────────────────────────────────────
-FROM node:20-alpine AS deps
-RUN corepack enable && corepack prepare pnpm@latest --activate
-WORKDIR /app
-
-COPY package.json .npmrc ./
-RUN pnpm install --no-frozen-lockfile
-
-# ── Stage 2: build ───────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
-RUN corepack enable && corepack prepare pnpm@latest --activate
-WORKDIR /app
-
-# Variables públicas de Next.js (inyectadas como build args en Railway)
-ARG NEXT_PUBLIC_API_URL
-ARG NEXT_PUBLIC_FIREBASE_API_KEY
-ARG NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
-ARG NEXT_PUBLIC_FIREBASE_PROJECT_ID
-ARG NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
-ARG NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
-ARG NEXT_PUBLIC_FIREBASE_APP_ID
-
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_FIREBASE_API_KEY=$NEXT_PUBLIC_FIREBASE_API_KEY
-ENV NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=$NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
-ENV NEXT_PUBLIC_FIREBASE_PROJECT_ID=$NEXT_PUBLIC_FIREBASE_PROJECT_ID
-ENV NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=$NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
-ENV NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=$NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
-ENV NEXT_PUBLIC_FIREBASE_APP_ID=$NEXT_PUBLIC_FIREBASE_APP_ID
-ENV NEXT_TELEMETRY_DISABLED=1
-
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-
-RUN pnpm build
-
-# ── Stage 3: runner mínimo ────────────────────────────────────────────────────
-FROM node:20-alpine AS runner
-WORKDIR /app
-
-ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
-
-RUN addgroup --system --gid 1001 nodejs \
- && adduser  --system --uid 1001 nextjs
-
-COPY --from=builder /app/public                              ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static  ./.next/static
-
-USER nextjs
-
-EXPOSE 3000
-ENV PORT=3000
-ENV HOSTNAME="0.0.0.0"
-
-CMD ["node", "server.js"]
-DOCKERFILE
-
-ok "Dockerfile creado"
-
-# ─── 5. railway.json ──────────────────────────────────────────────────────────
-log "Paso 5 — Creando railway.json..."
-
-cat > railway.json << 'RAILWAYJSON'
-{
-  "$schema": "https://railway.app/railway.schema.json",
-  "build": {
-    "builder": "DOCKERFILE",
-    "dockerfilePath": "Dockerfile"
-  },
-  "deploy": {
-    "startCommand": "node server.js",
-    "healthcheckPath": "/",
-    "healthcheckTimeout": 300,
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 3
-  }
-}
-RAILWAYJSON
-
-ok "railway.json creado"
-
-# ─── 6. .dockerignore ─────────────────────────────────────────────────────────
-log "Paso 6 — Creando .dockerignore..."
-
-cat > .dockerignore << 'DOCKERIGNORE'
-node_modules
-.pnpm-store
-.next
-out
-.env
-.env.local
-.env.*.local
-.git
-.gitignore
-*.md
-README*
-.github
-Dockerfile*
-.dockerignore
-railway.json
-__tests__
-*.test.ts
-*.test.tsx
-*.spec.ts
-*.spec.tsx
-coverage
-.DS_Store
-Thumbs.db
-DOCKERIGNORE
-
-ok ".dockerignore creado"
-
-# ─── 7. Regenerar pnpm-lock.yaml ─────────────────────────────────────────────
-log "Paso 7 — Regenerando pnpm-lock.yaml..."
-pnpm install --no-frozen-lockfile
-ok "pnpm-lock.yaml regenerado"
-
-# ─── Resumen ──────────────────────────────────────────────────────────────────
 echo ""
-echo -e "${GREEN}══════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  Fix completado — real-dashboard-front${NC}"
-echo -e "${GREEN}══════════════════════════════════════════════════════${NC}"
-echo -e "  ${YELLOW}ELIMINADO${NC}   pnpm-workspace.yaml"
-echo -e "  ${GREEN}CREADO${NC}      .npmrc"
-echo -e "  ${GREEN}MODIFICADO${NC}  next.config.mjs  (+ output: 'standalone')"
-echo -e "  ${GREEN}CREADO${NC}      Dockerfile"
-echo -e "  ${GREEN}CREADO${NC}      railway.json"
-echo -e "  ${GREEN}CREADO${NC}      .dockerignore"
-echo -e "  ${GREEN}CREADO${NC}      pnpm-lock.yaml   (regenerado)"
+echo -e "${YELLOW}  Si real-front y dashboard-front corren en DOMINIOS DISTINTOS:${NC}"
+echo "  Editá hooks/use-dashboard-sso.ts en real-front."
+echo "  Reemplazá la línea del redirect:"
 echo ""
-echo -e "${BLUE}Próximos pasos:${NC}"
-echo -e "  1. git add -A"
-echo -e "  2. git commit -m 'fix: railway deploy dashboard — remove workspace.yaml, add Dockerfile'"
-echo -e "  3. git push"
-echo -e "  4. En Railway → Variables agregar: NEXT_PUBLIC_API_URL y NEXT_PUBLIC_FIREBASE_*"
+echo "    // ANTES (mismo dominio — localStorage compartido):"
+echo "    window.location.href = \`\${DASHBOARD_FRONT_URL}/dashboard\`"
+echo ""
+echo "    // DESPUÉS (dominios distintos — pasar tokens por URL):"
+echo "    const ssoUrl = new URL(\`\${DASHBOARD_FRONT_URL}/auth/sso\`)"
+echo "    ssoUrl.searchParams.set('token',   tokens.accessToken)"
+echo "    ssoUrl.searchParams.set('refresh', tokens.refreshToken)"
+echo "    window.location.href = ssoUrl.toString()"
+echo ""
+echo -e "${YELLOW}  Si ambas apps corren en localhost (mismo dominio):${NC}"
+echo "  No hace falta tocar nada — el script 3-real-front.sh ya es suficiente."
+echo ""
+
+echo -e "${GREEN}══ dashboard-front listo ═════════════════════════════════════${NC}"
+echo "  Archivos creados:"
+echo "    app/auth/layout.tsx      (layout sin guards)"
+echo "    app/auth/sso/page.tsx    (entrada SSO por query params)"
+echo ""
+echo "  Ruta disponible:"
+echo "    GET /auth/sso?token=<accessToken>&refresh=<refreshToken>"
+echo ""
+echo "  → pnpm dev"
 echo ""
