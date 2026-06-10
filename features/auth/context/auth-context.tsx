@@ -3,25 +3,17 @@
 // =============================================================================
 // auth-context.tsx — AuthProvider del dashboard-front
 //
-// FLUJO DE AUTENTICACIÓN:
-//   1. Firebase onAuthStateChanged dispara con el usuario Firebase (fbUser)
-//   2. Con el Firebase token, sincronizamos con dashboard-back (POST /auth/sync)
-//      → crea o actualiza el User en la DB del dashboard-back
-//      → devuelve { id, email, nombre, role, firebaseUid, isActive, createdAt }
-//   3. Con el mismo Firebase token, consultamos real-back (GET /users/me)
-//      → devuelve el perfil completo con organization.id
-//      → de ahí extraemos organizationId
+// FLUJO SSO:
+//   1. Firebase restaura la sesión (misma app Firebase que real-front)
+//   2. onAuthStateChanged dispara con fbUser != null
+//   3. syncWithBackend: POST /auth/sync al dashboard-back
+//      → crea/actualiza el User en la DB del dashboard-back
+//   4. fetchOrgId: GET /auth/me al dashboard-back para obtener el perfil completo
 //
-// INVARIANTE DE isAuthenticated:
-//   = !!firebaseUser
-//   Firebase es la fuente de verdad de autenticación.
-//   El perfil del backend (user) puede tardar o fallar sin expulsar al usuario.
-//
-// FLUJO SSO DESDE real-front:
-//   real-front llama POST /auth/firebase-sso → obtiene accessToken (JWT propio)
-//   El dashboard-front NO usa ese JWT — usa Firebase directamente.
-//   Cuando el usuario llega al dashboard-front, Firebase ya restauró la sesión
-//   via IndexedDB (mismo proyecto Firebase) → onAuthStateChanged dispara con fbUser.
+// INVARIANTE:
+//   isAuthenticated = !!firebaseUser
+//   Firebase es la fuente de verdad. El perfil del backend puede tardar o fallar
+//   sin expulsar al usuario.
 // =============================================================================
 
 import {
@@ -41,19 +33,18 @@ import {
   signOut,
   type User,
 } from '@/lib/firebase';
-import { apiClient } from '@/lib/api-client';
+import { API_URLS } from '@/config/constants';
 
 // ─── Tipos públicos ────────────────────────────────────────────────────────────
 
 export interface DashboardUser {
-  id:          string;
-  email:       string;
-  nombre:      string;
-  role:        string;
-  firebaseUid: string;
-  isActive:    boolean;
-  createdAt:   string;
-  // Perfil del Sistema 1 (real-back) — puede ser null
+  id:              string;
+  email:           string;
+  nombre:          string;
+  role:            string;
+  firebaseUid:     string;
+  isActive:        boolean;
+  createdAt:       string;
   realBackProfile: Record<string, unknown> | null;
 }
 
@@ -61,7 +52,7 @@ interface AuthContextType {
   firebaseUser:      User | null;
   user:              DashboardUser | null;
   isLoading:         boolean;
-  isAuthenticated:   boolean;   // = !!firebaseUser (Firebase es la fuente de verdad)
+  isAuthenticated:   boolean;
   organizationId:    string | null;
   setOrganizationId: (id: string) => void;
   loginWithGoogle:   () => Promise<void>;
@@ -77,44 +68,88 @@ export function useAuth(): AuthContextType {
   return ctx;
 }
 
-// ─── Helpers internos ─────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Llama POST /auth/sync al dashboard-back para sincronizar el usuario.
- * Si falla, NO lanza — devuelve null y logea el error.
+ * POST /auth/sync al dashboard-back.
+ *
+ * El endpoint puede devolver:
+ *   { success: true, data: DashboardUser }   ← formato con wrapper
+ *   DashboardUser directamente               ← formato sin wrapper
+ * Manejamos ambos.
  */
-async function syncDashboardBackend(
-  fbUser: User,
-): Promise<DashboardUser | null> {
+async function syncDashboardUser(fbUser: User): Promise<DashboardUser | null> {
+  const baseUrl = API_URLS['dashboard'];
+  if (!baseUrl) return null;
+
   try {
-    const result = await apiClient.post<{ success: boolean; data: DashboardUser }>(
-      'dashboard',
-      '/auth/sync',
-      {
+    const token = await fbUser.getIdToken();
+    const res = await fetch(`${baseUrl}/auth/sync`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({
         firebaseUid: fbUser.uid,
         email:       fbUser.email ?? '',
         nombre:      fbUser.displayName ?? fbUser.email?.split('@')[0] ?? '',
         avatarUrl:   fbUser.photoURL ?? undefined,
-      },
-    );
-    return result?.data ?? null;
+      }),
+    });
+
+    if (!res.ok) return null;
+
+    const json = await res.json() as unknown;
+
+    // Normalizar respuesta — el backend puede devolver con o sin wrapper
+    if (json && typeof json === 'object') {
+      const obj = json as Record<string, unknown>;
+      if (obj['data'] && typeof obj['data'] === 'object') {
+        return obj['data'] as DashboardUser;
+      }
+      // Sin wrapper → es el DashboardUser directamente
+      if (obj['id'] && obj['email']) {
+        return obj as unknown as DashboardUser;
+      }
+    }
+
+    return null;
   } catch (err) {
-    console.error('[Auth] syncDashboardBackend falló:', err);
+    console.error('[Auth] syncDashboardUser falló:', err);
     return null;
   }
 }
 
 /**
- * Llama GET /auth/me al dashboard-back como fallback si el sync no respondió.
- * El token Firebase es válido en el dashboard-back (FirebaseAuthGuard).
+ * GET /auth/me al dashboard-back — fallback si el sync no respondió bien.
  */
-async function fetchDashboardMe(): Promise<DashboardUser | null> {
+async function fetchDashboardMe(fbUser: User): Promise<DashboardUser | null> {
+  const baseUrl = API_URLS['dashboard'];
+  if (!baseUrl) return null;
+
   try {
-    const result = await apiClient.get<{ success: boolean; data: DashboardUser }>(
-      'dashboard',
-      '/auth/me',
-    );
-    return result?.data ?? null;
+    const token = await fbUser.getIdToken();
+    const res = await fetch(`${baseUrl}/auth/me`, {
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+
+    if (!res.ok) return null;
+
+    const json = await res.json() as unknown;
+    if (json && typeof json === 'object') {
+      const obj = json as Record<string, unknown>;
+      if (obj['data'] && typeof obj['data'] === 'object') {
+        return obj['data'] as DashboardUser;
+      }
+      if (obj['id'] && obj['email']) {
+        return obj as unknown as DashboardUser;
+      }
+    }
+    return null;
   } catch (err) {
     console.error('[Auth] fetchDashboardMe falló:', err);
     return null;
@@ -122,31 +157,21 @@ async function fetchDashboardMe(): Promise<DashboardUser | null> {
 }
 
 /**
- * Llama GET /users/me al Sistema 1 (real-back) para obtener organizationId.
+ * Obtiene organizationId desde el real-back (Sistema 1).
+ * Usa el mismo token Firebase — el real-back también acepta FirebaseAuthGuard.
  *
- * El real-back también usa FirebaseAuthGuard → acepta el mismo token Firebase.
- * URL configurada en NEXT_PUBLIC_REAL_BACK_URL (o fallback a NEXT_PUBLIC_API_URL).
- *
- * Si el servicio no está disponible, devuelve null sin romper el flujo.
+ * Primero intenta NEXT_PUBLIC_REAL_BACK_URL; si no está configurado,
+ * intenta NEXT_PUBLIC_API_URL como fallback (en caso de que apunten al mismo back).
  */
-async function fetchRealBackProfile(): Promise<Record<string, unknown> | null> {
+async function fetchOrgIdFromRealBack(fbUser: User): Promise<string | null> {
   const realBackUrl =
     process.env.NEXT_PUBLIC_REAL_BACK_URL ??
-    process.env.NEXT_PUBLIC_API_URL ??
     null;
 
-  if (!realBackUrl) {
-    // Si no hay URL del real-back configurada, no bloqueamos el flujo
-    return null;
-  }
+  if (!realBackUrl) return null;
 
   try {
-    // No usamos apiClient para no depender del sistema 'dashboard'
-    // Necesitamos el token Firebase directamente
-    const { auth: firebaseAuth } = await import('@/lib/firebase');
-    if (!firebaseAuth.currentUser) return null;
-
-    const token = await firebaseAuth.currentUser.getIdToken();
+    const token = await fbUser.getIdToken();
     const res = await fetch(`${realBackUrl}/users/me`, {
       headers: {
         'Content-Type':  'application/json',
@@ -155,85 +180,57 @@ async function fetchRealBackProfile(): Promise<Record<string, unknown> | null> {
     });
 
     if (!res.ok) return null;
-    const json = await res.json() as { success: boolean; data: unknown };
-    return (json?.data as Record<string, unknown>) ?? null;
+
+    const json = await res.json() as Record<string, unknown>;
+    const data = (json['data'] ?? json) as Record<string, unknown>;
+
+    // Caso A: data.organization.id
+    const org = data['organization'] as Record<string, unknown> | null | undefined;
+    if (org?.['id']) return org['id'] as string;
+
+    // Caso B: data.tenants[].organizationId
+    const tenants = data['tenants'] as Array<Record<string, unknown>> | null | undefined;
+    if (Array.isArray(tenants) && tenants.length > 0) {
+      const owner = tenants.find((t) => t['role'] === 'OWNER') ?? tenants[0];
+      if (owner?.['organizationId']) return owner['organizationId'] as string;
+    }
+
+    return null;
   } catch (err) {
-    console.error('[Auth] fetchRealBackProfile falló:', err);
+    console.error('[Auth] fetchOrgIdFromRealBack falló:', err);
     return null;
   }
-}
-
-/**
- * Extrae el organizationId del perfil del real-back.
- * El real-back devuelve { organization: { id, ... } } dentro de data.
- */
-function extractOrgId(profile: Record<string, unknown> | null): string | null {
-  if (!profile) return null;
-
-  // Caso 1: profile.organization.id (estructura de real-back)
-  const org = profile.organization as Record<string, unknown> | null | undefined;
-  if (org?.id) return org.id as string;
-
-  // Caso 2: profile.tenants[0].organizationId (si viene con tenants)
-  const tenants = profile.tenants as Array<Record<string, unknown>> | null | undefined;
-  if (Array.isArray(tenants) && tenants.length > 0) {
-    const ownerTenant = tenants.find((t) => t.role === 'OWNER');
-    const firstTenant = ownerTenant ?? tenants[0];
-    if (firstTenant?.organizationId) return firstTenant.organizationId as string;
-  }
-
-  return null;
 }
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
-  const [user, setUser]                 = useState<DashboardUser | null>(null);
-  const [isLoading, setIsLoading]       = useState(true);   // true hasta que onAuthStateChanged resuelve
-  const [organizationId, setOrgId]      = useState<string | null>(null);
-  const router                          = useRouter();
-  const refreshTimerRef                 = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [user,         setUser]         = useState<DashboardUser | null>(null);
+  const [isLoading,    setIsLoading]    = useState(true);
+  const [organizationId, setOrgId]     = useState<string | null>(null);
+  const router                         = useRouter();
+  const refreshTimerRef                = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /**
-   * Refresh proactivo del token Firebase (expira cada 60 min).
-   * Lo hacemos a los 55 min para evitar 401 en requests de larga sesión.
-   */
   const scheduleTokenRefresh = useCallback((fbUser: User) => {
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     refreshTimerRef.current = setTimeout(async () => {
-      try {
-        await fbUser.getIdToken(true);
-      } catch {
-        // Si falla, Firebase dispara onAuthStateChanged(null) → logout automático
-      }
+      try { await fbUser.getIdToken(true); } catch { /* Firebase manejará logout */ }
     }, 55 * 60 * 1000);
   }, []);
 
-  /**
-   * Carga completa del perfil post-autenticación:
-   *  1. Sync con dashboard-back (crea/actualiza usuario en esa DB)
-   *  2. Fetch de real-back para obtener organizationId
-   */
   const loadProfile = useCallback(async (fbUser: User) => {
-    // Paso 1 — sync con dashboard-back
-    let dashboardProfile = await syncDashboardBackend(fbUser);
+    // 1. Sync con dashboard-back
+    let dashUser = await syncDashboardUser(fbUser);
 
-    // Fallback — si sync falló, intentar GET /auth/me
-    if (!dashboardProfile) {
-      dashboardProfile = await fetchDashboardMe();
+    // 2. Fallback: GET /auth/me si sync no devolvió datos
+    if (!dashUser) {
+      dashUser = await fetchDashboardMe(fbUser);
     }
 
-    // Paso 2 — obtener organizationId del real-back
-    const realBackProfile = await fetchRealBackProfile();
-    const orgId = extractOrgId(realBackProfile);
-
-    if (dashboardProfile) {
-      setUser({ ...dashboardProfile, realBackProfile });
-    } else {
-      // No pudimos obtener el perfil del backend, pero Firebase sí autenticó.
-      // Creamos un perfil mínimo para no bloquear el dashboard.
-      setUser({
+    // 3. Si aún no tenemos perfil, crear uno mínimo para no bloquear el dashboard
+    if (!dashUser) {
+      dashUser = {
         id:              fbUser.uid,
         email:           fbUser.email ?? '',
         nombre:          fbUser.displayName ?? fbUser.email?.split('@')[0] ?? 'Usuario',
@@ -241,11 +238,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         firebaseUid:     fbUser.uid,
         isActive:        true,
         createdAt:       new Date().toISOString(),
-        realBackProfile,
-      });
+        realBackProfile: null,
+      };
     }
 
-    if (orgId) setOrgId(orgId);
+    setUser(dashUser);
+
+    // 4. Obtener organizationId del real-back en paralelo (no bloquea)
+    fetchOrgIdFromRealBack(fbUser).then((orgId) => {
+      if (orgId) setOrgId(orgId);
+    });
   }, []);
 
   const refreshUser = useCallback(async () => {
@@ -255,7 +257,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const loginWithGoogle = useCallback(async () => {
     await signInWithGoogle();
-    // onAuthStateChanged se encarga del resto
   }, []);
 
   const logout = useCallback(async () => {
@@ -266,25 +267,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.push('/login');
   }, [router]);
 
-  // ── Listener principal de auth state ──────────────────────────────────────
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       setFirebaseUser(fbUser);
 
       if (fbUser) {
         scheduleTokenRefresh(fbUser);
-        // loadProfile es async — cuando termine actualizará user y orgId.
-        // isLoading se pone a false DESPUÉS de intentar cargar el perfil
-        // para evitar flashes de UI con estado incompleto.
-        await loadProfile(fbUser);
+        // loadProfile es async — no esperamos para poner isLoading=false
+        // así el layout puede mostrar el dashboard mientras el perfil carga
+        loadProfile(fbUser).finally(() => setIsLoading(false));
       } else {
         if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
         setUser(null);
         setOrgId(null);
+        setIsLoading(false);
       }
-
-      // Siempre marcar como listo, independientemente del resultado del perfil
-      setIsLoading(false);
     });
 
     return () => {
@@ -299,8 +296,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         firebaseUser,
         user,
         isLoading,
-        // CAMBIO CLAVE: isAuthenticated depende SOLO de Firebase, no del perfil backend.
-        // Esto evita redirects prematuros mientras el backend carga.
+        // CLAVE: isAuthenticated solo depende de Firebase
+        // El perfil del backend (user) puede tardar sin expulsar al usuario
         isAuthenticated:   !!firebaseUser,
         organizationId,
         setOrganizationId: setOrgId,
