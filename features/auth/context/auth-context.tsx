@@ -1,22 +1,23 @@
 'use client';
 
 // =============================================================================
-// auth-context.tsx — dashboard-front (JWT-based, sin Firebase client SDK)
+// auth-context.tsx — JWT-based (sin Firebase client SDK)
 //
-// ARQUITECTURA:
-//   El dashboard-back emite JWT propio (via /auth/firebase-sso).
-//   El dashboard-front guarda ese JWT en localStorage y lo usa en cada request.
-//   No depende de Firebase en el cliente — Firebase solo vive en el backend.
+// El dashboard-back emite JWT propio via POST /auth/firebase-sso.
+// El dashboard-front lo guarda en localStorage y lo usa en cada request.
+// No dependemos de Firebase en el cliente — resuelve el problema cross-domain.
 //
-// TOKENS:
-//   localStorage['dash_access_token']  → JWT de acceso (15 min)
-//   localStorage['dash_refresh_token'] → JWT de refresh (7 días)
+// TOKENS EN LOCALSTORAGE:
+//   'dash_access_token'   → JWT de acceso (15 min)
+//   'dash_refresh_token'  → JWT de refresh (7 días)
+//   'accessToken'         → alias legacy (escrito por login/sso pages)
+//   'refreshToken'        → alias legacy
 //
 // FLUJO SSO DESDE real-front:
-//   1. real-front llama POST /auth/firebase-sso al dashboard-back
-//   2. real-front redirige a dashboard-front/auth/sso?token=JWT&refresh=REFRESH
-//   3. /auth/sso guarda los tokens en localStorage y redirige a /dashboard
-//   4. AuthContext lee los tokens, llama GET /auth/me, hidrata el estado
+//   real-front → POST /auth/firebase-sso → JWT
+//   real-front → redirect → /auth/sso?token=JWT&refresh=REFRESH
+//   /auth/sso  → localStorage.setItem → redirect a /dashboard
+//   AuthContext → lee JWT → GET /auth/me → isAuthenticated = true ✓
 // =============================================================================
 
 import {
@@ -30,18 +31,39 @@ import {
 } from 'react';
 import { useRouter } from 'next/navigation';
 
-// ─── Constantes de storage ────────────────────────────────────────────────────
+// ─── Keys de localStorage ─────────────────────────────────────────────────────
+const A_KEY = 'dash_access_token';
+const R_KEY = 'dash_refresh_token';
+const O_KEY = 'dash_org_id';
 
-const ACCESS_KEY  = 'dash_access_token';
-const REFRESH_KEY = 'dash_refresh_token';
-const ORG_KEY     = 'dash_org_id';
-
-function getBaseUrl(): string {
+function getBase(): string {
   return (process.env.NEXT_PUBLIC_DASHBOARD_API_URL ?? 'http://localhost:3001/api/v1')
     .replace(/\/+$/, '');
 }
 
-// ─── Tipos públicos ────────────────────────────────────────────────────────────
+// Lee el access token — preferir key nueva, fallback a legacy
+function readAccess(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(A_KEY) ?? localStorage.getItem('accessToken') ?? null;
+}
+
+function readRefresh(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(R_KEY) ?? localStorage.getItem('refreshToken') ?? null;
+}
+
+function writeTokens(access: string, refresh: string): void {
+  localStorage.setItem(A_KEY, access);
+  localStorage.setItem(R_KEY, refresh);
+  localStorage.setItem('accessToken', access);
+  localStorage.setItem('refreshToken', refresh);
+}
+
+function wipeTokens(): void {
+  [A_KEY, R_KEY, O_KEY, 'accessToken', 'refreshToken'].forEach(k => localStorage.removeItem(k));
+}
+
+// ─── Tipos ────────────────────────────────────────────────────────────────────
 
 export interface DashboardUser {
   id:          string;
@@ -55,120 +77,53 @@ export interface DashboardUser {
 }
 
 interface AuthContextType {
+  // Alias para compatibilidad con código existente que usa firebaseUser
+  firebaseUser:      DashboardUser | null;
   user:              DashboardUser | null;
   isLoading:         boolean;
   isAuthenticated:   boolean;
   organizationId:    string | null;
   setOrganizationId: (id: string) => void;
+  loginWithGoogle:   () => Promise<void>;
   logout:            () => void;
   refreshUser:       () => Promise<void>;
-  // Expuesto para compatibilidad con código que usa firebaseUser
-  firebaseUser:      null;
-  loginWithGoogle:   () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const Ctx = createContext<AuthContextType | undefined>(undefined);
 
 export function useAuth(): AuthContextType {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth debe usarse dentro de AuthProvider');
-  return ctx;
-}
-
-// ─── Helpers de token ─────────────────────────────────────────────────────────
-
-function getAccessToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(ACCESS_KEY);
-}
-
-function getRefreshToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(REFRESH_KEY);
-}
-
-function saveTokens(access: string, refresh: string): void {
-  localStorage.setItem(ACCESS_KEY, access);
-  localStorage.setItem(REFRESH_KEY, refresh);
-}
-
-function clearTokens(): void {
-  localStorage.removeItem(ACCESS_KEY);
-  localStorage.removeItem(REFRESH_KEY);
-  localStorage.removeItem(ORG_KEY);
-  // También limpiar keys legacy
-  localStorage.removeItem('accessToken');
-  localStorage.removeItem('refreshToken');
-}
-
-/**
- * Si localStorage tiene los tokens legacy (accessToken, refreshToken),
- * migrarlos a las keys nuevas.
- */
-function migrateLegacyTokens(): void {
-  const legacy = localStorage.getItem('accessToken');
-  const legacyR = localStorage.getItem('refreshToken');
-  if (legacy && !getAccessToken()) {
-    localStorage.setItem(ACCESS_KEY, legacy);
-    localStorage.removeItem('accessToken');
-  }
-  if (legacyR && !getRefreshToken()) {
-    localStorage.setItem(REFRESH_KEY, legacyR);
-    localStorage.removeItem('refreshToken');
-  }
+  const c = useContext(Ctx);
+  if (!c) throw new Error('useAuth debe usarse dentro de AuthProvider');
+  return c;
 }
 
 // ─── Fetch helpers ────────────────────────────────────────────────────────────
 
-async function fetchMe(token: string): Promise<DashboardUser | null> {
+async function callMe(token: string): Promise<DashboardUser | null> {
   try {
-    const res = await fetch(`${getBaseUrl()}/auth/me`, {
+    const r = await fetch(`${getBase()}/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) return null;
-    const json = await res.json() as Record<string, unknown>;
-    const data = (json['data'] ?? json) as Record<string, unknown>;
-    if (data['id'] && data['email']) return data as unknown as DashboardUser;
+    if (!r.ok) return null;
+    const j = await r.json() as Record<string, unknown>;
+    const d = (j['data'] ?? j) as Record<string, unknown>;
+    if (d['id'] && d['email']) return d as unknown as DashboardUser;
     return null;
   } catch { return null; }
 }
 
-async function doRefresh(refreshToken: string): Promise<{ accessToken: string; refreshToken: string } | null> {
+async function callRefresh(refresh: string): Promise<{ accessToken: string; refreshToken: string } | null> {
   try {
-    const res = await fetch(`${getBaseUrl()}/auth/refresh`, {
-      method:  'POST',
+    const r = await fetch(`${getBase()}/auth/refresh`, {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ refreshToken }),
+      body: JSON.stringify({ refreshToken: refresh }),
     });
-    if (!res.ok) return null;
-    const json = await res.json() as Record<string, unknown>;
-    const data = (json['data'] ?? json) as Record<string, unknown>;
-    if (data['accessToken'] && data['refreshToken']) {
-      return { accessToken: data['accessToken'] as string, refreshToken: data['refreshToken'] as string };
-    }
-    return null;
-  } catch { return null; }
-}
-
-async function fetchOrgId(token: string): Promise<string | null> {
-  const base = process.env.NEXT_PUBLIC_REAL_BACK_URL;
-  if (!base) return null;
-  try {
-    const res = await fetch(`${base.replace(/\/+$/, '')}/users/me`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) return null;
-    // Nota: el real-back acepta Firebase tokens, no el JWT del dashboard-back.
-    // Si los tokens son distintos, esto puede fallar — en ese caso orgId
-    // quedará null y el dashboard mostrará datos sin filtro de org.
-    const json = await res.json() as Record<string, unknown>;
-    const data = (json['data'] ?? json) as Record<string, unknown>;
-    const org = data['organization'] as Record<string, unknown> | null | undefined;
-    if (org?.['id']) return org['id'] as string;
-    const tenants = data['tenants'] as Array<Record<string, unknown>> | null | undefined;
-    if (Array.isArray(tenants) && tenants.length > 0) {
-      const owner = tenants.find((t) => t['role'] === 'OWNER') ?? tenants[0];
-      if (owner?.['organizationId']) return owner['organizationId'] as string;
+    if (!r.ok) return null;
+    const j = await r.json() as Record<string, unknown>;
+    const d = (j['data'] ?? j) as Record<string, unknown>;
+    if (d['accessToken'] && d['refreshToken']) {
+      return { accessToken: d['accessToken'] as string, refreshToken: d['refreshToken'] as string };
     }
     return null;
   } catch { return null; }
@@ -177,124 +132,102 @@ async function fetchOrgId(token: string): Promise<string | null> {
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user,       setUser]    = useState<DashboardUser | null>(null);
-  const [isLoading,  setLoading] = useState(true);
-  const [organizationId, setOrgId] = useState<string | null>(() => {
-    if (typeof window !== 'undefined') return localStorage.getItem(ORG_KEY);
-    return null;
-  });
-  const router     = useRouter();
-  const timerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [user,      setUser]    = useState<DashboardUser | null>(null);
+  const [isLoading, setLoad]    = useState(true);
+  const [orgId,     setOrgId]   = useState<string | null>(null);
+  const router   = useRouter();
+  const interval = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const setOrganizationId = useCallback((id: string) => {
     setOrgId(id);
-    if (typeof window !== 'undefined') localStorage.setItem(ORG_KEY, id);
+    if (typeof window !== 'undefined') localStorage.setItem(O_KEY, id);
   }, []);
 
-  /**
-   * Intenta cargar el usuario con el access token actual.
-   * Si falla con 401, intenta refresh. Si eso también falla, limpia.
-   */
-  const loadUser = useCallback(async () => {
-    if (typeof window === 'undefined') { setLoading(false); return; }
+  // ── Carga inicial ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    (async () => {
+      if (typeof window === 'undefined') { setLoad(false); return; }
 
-    // Migrar tokens legacy si existen
-    migrateLegacyTokens();
+      // Leer orgId guardado
+      const storedOrg = localStorage.getItem(O_KEY);
+      if (storedOrg) setOrgId(storedOrg);
 
-    let access = getAccessToken();
-    if (!access) { setLoading(false); return; }
+      let access = readAccess();
+      if (!access) { setLoad(false); return; }
 
-    let dashUser = await fetchMe(access);
+      // Intentar GET /auth/me con el token actual
+      let dashUser = await callMe(access);
 
-    // Token expirado → intentar refresh
-    if (!dashUser) {
-      const refresh = getRefreshToken();
-      if (refresh) {
-        const newTokens = await doRefresh(refresh);
-        if (newTokens) {
-          saveTokens(newTokens.accessToken, newTokens.refreshToken);
-          access = newTokens.accessToken;
-          dashUser = await fetchMe(access);
+      // Token expirado → refresh
+      if (!dashUser) {
+        const refresh = readRefresh();
+        if (refresh) {
+          const fresh = await callRefresh(refresh);
+          if (fresh) {
+            writeTokens(fresh.accessToken, fresh.refreshToken);
+            access = fresh.accessToken;
+            dashUser = await callMe(access);
+          }
         }
       }
-    }
 
-    if (dashUser) {
-      setUser(dashUser);
-      // OrgId del dashboard-back no viene en /auth/me
-      // Intentar desde el real-back (puede fallar si tokens son distintos)
-      const storedOrg = localStorage.getItem(ORG_KEY);
-      if (!storedOrg) {
-        fetchOrgId(access).then((orgId) => {
-          if (orgId) setOrganizationId(orgId);
-        });
+      if (dashUser) {
+        setUser(dashUser);
+      } else {
+        wipeTokens();
       }
-    } else {
-      clearTokens();
-      setUser(null);
-    }
+      setLoad(false);
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    setLoading(false);
-  }, [setOrganizationId]);
+  // ── Auto-refresh cada 13 min (JWT expira a los 15) ─────────────────────────
+  useEffect(() => {
+    if (!user) return;
+    interval.current = setInterval(async () => {
+      const refresh = readRefresh();
+      if (!refresh) { logout(); return; }
+      const fresh = await callRefresh(refresh);
+      if (fresh) {
+        writeTokens(fresh.accessToken, fresh.refreshToken);
+      } else {
+        logout();
+      }
+    }, 13 * 60 * 1000);
+    return () => { if (interval.current) clearInterval(interval.current); };
+  }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const refreshUser = useCallback(async () => {
-    await loadUser();
-  }, [loadUser]);
+    const access = readAccess();
+    if (!access) return;
+    const u = await callMe(access);
+    if (u) setUser(u);
+  }, []);
 
   const logout = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    clearTokens();
+    if (interval.current) clearInterval(interval.current);
+    wipeTokens();
     setUser(null);
     setOrgId(null);
     router.push('/login');
   }, [router]);
 
-  // loginWithGoogle redirige al usuario al login page del dashboard
-  // donde puede hacer login con Google directamente (si el dashboard-back lo soporta)
-  // Por ahora redirige a /login
+  // loginWithGoogle: redirige al /login del dashboard donde el usuario
+  // puede hacer Google login directamente (el login/page.tsx lo maneja)
   const loginWithGoogle = useCallback(async () => {
     router.push('/login');
   }, [router]);
 
-  // Cargar usuario al montar
-  useEffect(() => {
-    loadUser();
-  }, [loadUser]);
+  const val: AuthContextType = {
+    firebaseUser:      user,   // alias — mismo objeto para compatibilidad
+    user,
+    isLoading,
+    isAuthenticated:   !!user, // JWT-based: si tenemos user, estamos autenticados
+    organizationId:    orgId,
+    setOrganizationId,
+    loginWithGoogle,
+    logout,
+    refreshUser,
+  };
 
-  // Refresh automático del JWT cada 13 minutos (JWT expira a los 15)
-  useEffect(() => {
-    if (!user) return;
-    timerRef.current = setInterval(async () => {
-      const refresh = getRefreshToken();
-      if (!refresh) return;
-      const newTokens = await doRefresh(refresh);
-      if (newTokens) {
-        saveTokens(newTokens.accessToken, newTokens.refreshToken);
-      } else {
-        // Refresh falló → logout
-        logout();
-      }
-    }, 13 * 60 * 1000);
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [user, logout]);
-
-  return (
-    <AuthContext.Provider value={{
-      user,
-      isLoading,
-      isAuthenticated: !!user,
-      organizationId,
-      setOrganizationId,
-      logout,
-      refreshUser,
-      // Compatibilidad
-      firebaseUser: null,
-      loginWithGoogle,
-    }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <Ctx.Provider value={val}>{children}</Ctx.Provider>;
 }
