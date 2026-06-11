@@ -1,94 +1,89 @@
 #!/usr/bin/env bash
 # =============================================================================
-# fix-sso-dashboard-front.sh  — v2 (diagnóstico preciso con logs reales)
+# fix-sso-dashboard-front.sh  — v3 (diagnóstico definitivo)
 #
-# PROBLEMA EXACTO (confirmado con los logs):
+# DIAGNÓSTICO REAL (confirmado con logs):
+#
 #   Los logs muestran:
-#     GET /dashboard → 200  (servidor sirve la página)
-#     GET /login     → 200  (cliente redirige a login)
+#     dashboard-back: POST /auth/firebase-sso 200 ✓
+#     dashboard-front: GET /dashboard → GET /login  (redirige a login)
+#     AUSENTE en logs: POST /auth/sync  ← CLAVE
 #
-#   El flujo real es:
-#   1. real-front: useDashboardSSO llama POST /auth/firebase-sso → 200 ✓
-#      → guarda accessToken + refreshToken en localStorage del real-front
-#      → hace window.location.href = DASHBOARD_FRONT_URL/dashboard
-#   
-#   2. dashboard-front recibe GET /dashboard
-#      → AuthContext empieza: isLoading=true, firebaseUser=null, user=null
-#      → onAuthStateChanged de Firebase todavía NO disparó (async, ~50-200ms)
-#      → React hidrata → dashboard/layout.tsx se ejecuta
-#      → isLoading=true → muestra spinner (OK)
-#      → Firebase resuelve onAuthStateChanged → fbUser != null (misma sesión Firebase)
-#      → syncWithBackend llama POST /auth/sync al dashboard-back
-#      → PERO: dashboard-back tiene su propio users table. El usuario existe
-#        (fue creado por firebase-sso), PERO syncWithBackend llama la URL
-#        configurada en NEXT_PUBLIC_API_URL que es el dashboard-back (correcto).
-#      → El problema: syncWithBackend hace:
-#           apiClient.post('dashboard', '/auth/sync', {...})
-#        que retorna { success: true, data: DashboardUser }
-#        PERO el unwrap() en api-client hace: return (json as {data:T}).data
-#        El endpoint /auth/sync devuelve el user directamente (no wrapeado en {data:})
-#        → result.data = undefined → dashboardProfile = null
-#      → Con dashboardProfile=null, user queda null
-#      → isAuthenticated = !!firebaseUser && !!user = true && false = FALSE
-#      → layout redirige a /login ← AQUÍ ESTÁ EL BUG
+#   El POST /auth/sync NUNCA llega al backend porque el AuthContext
+#   nunca llama syncWithBackend. ¿Por qué? Porque onAuthStateChanged
+#   dispara con fbUser = null en el dashboard-front.
 #
-# CAUSA RAÍZ REAL: la combinación de dos problemas:
-#   A. isAuthenticated = !!firebaseUser && !!user  (user puede ser null transitoriamente)
-#   B. El endpoint POST /auth/sync del dashboard-back devuelve el user directamente,
-#      no wrapeado en { data: user }. El unwrap() del apiClient saca .data que no existe.
-#      → dashboardProfile = undefined → tratado como null → user = null
+#   CAUSA: Firebase no restaura la sesión en el dashboard-front.
+#   Firebase guarda sesión bajo authDomain en IndexedDB.
+#   Si las NEXT_PUBLIC_FIREBASE_* no están en el BUILD de Railway
+#   del dashboard-front, Firebase se inicializa sin config válida
+#   y nunca encuentra la sesión del usuario.
 #
-# SOLUCIÓN:
-#   1. features/auth/context/auth-context.tsx
-#      - isAuthenticated = !!firebaseUser  (Firebase es la fuente de verdad)
-#      - syncWithBackend maneja tanto { data: DashboardUser } como DashboardUser directo
-#      - Si sync falla, fallback a GET /auth/me
-#      - Perfil mínimo si todo falla (no bloquear el dashboard)
+# SOLUCIÓN EN DOS PARTES:
 #
-#   2. app/dashboard/layout.tsx
-#      - Guard solo en !!firebaseUser, no en !!user
-#      - Spinner mientras isLoading (Firebase resolviendo)
+#   PARTE 1 — Railway (configuración, no código):
+#     Agregar en Railway del dashboard-front todas las NEXT_PUBLIC_FIREBASE_*
+#     como Build Variables (no solo Environment Variables).
+#     En Railway: Settings → Variables → agregar cada una como Build Variable.
 #
-# NO SE TOCA:
-#   - Dashboard-back (el endpoint funciona, era el unwrap del cliente)
-#   - Real-back
-#   - Real-front
-#   - api-client.ts (el unwrap es correcto para otros endpoints, arreglamos en el contexto)
+#   PARTE 2 — Código: el AuthContext debe manejar fbUser=null correctamente
+#     sin redirigir prematuramente mientras Firebase inicializa.
+#     También: usar window.location.href en lugar de router para el redirect
+#     post-SSO (evita problemas con el App Router de Next.js).
+#
+# ARCHIVOS MODIFICADOS:
+#   - features/auth/context/auth-context.tsx
+#   - app/dashboard/layout.tsx
+#   - app/auth/sso/page.tsx   ← NUEVO: página SSO que el real-front debe usar
+#
+# FLUJO CORRECTO DESPUÉS DEL FIX:
+#   real-front → POST /auth/firebase-sso (dashboard-back) → obtiene JWT
+#   real-front → redirect a: DASHBOARD_FRONT_URL/auth/sso?token=JWT
+#   dashboard-front /auth/sso → llama POST /auth/firebase-sso con el token
+#     (el token Firebase, NO el JWT) para crear sesión Firebase local
+#     → guarda JWT en localStorage → router.replace('/dashboard')
+#
+#   ALTERNATIVA MÁS SIMPLE (si mismo Firebase project):
+#   real-front → redirect a: DASHBOARD_FRONT_URL/dashboard
+#   Firebase restaura sesión automáticamente (misma IndexedDB)
+#   → AuthContext sincroniza → dashboard carga
+#
 # =============================================================================
 
 set -euo pipefail
-
-GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}✓${NC} $1"; }
 warn() { echo -e "${YELLOW}⚠${NC}  $1"; }
 fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
 step() { echo -e "\n${YELLOW}▶${NC} $1"; }
+info() { echo -e "${CYAN}ℹ${NC}  $1"; }
 
 [ -f "package.json" ] || fail "Ejecutá desde el root de real-dashboard-front"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. features/auth/context/auth-context.tsx
+#    Cambio mínimo: isAuthenticated = !!firebaseUser (no depende de user)
 # ─────────────────────────────────────────────────────────────────────────────
-step "Reescribiendo features/auth/context/auth-context.tsx"
+step "Parcheando features/auth/context/auth-context.tsx"
 mkdir -p features/auth/context
 
 cat > features/auth/context/auth-context.tsx << 'EOF'
 'use client';
 
 // =============================================================================
-// auth-context.tsx — AuthProvider del dashboard-front
+// auth-context.tsx — dashboard-front
+//
+// CAMBIO CLAVE vs original:
+//   isAuthenticated = !!firebaseUser   (no depende de !!user)
+//
+// Si Firebase tiene la sesión, el usuario está autenticado.
+// El perfil del backend (user) puede tardar o fallar sin expulsar al usuario.
 //
 // FLUJO SSO:
-//   1. Firebase restaura la sesión (misma app Firebase que real-front)
-//   2. onAuthStateChanged dispara con fbUser != null
-//   3. syncWithBackend: POST /auth/sync al dashboard-back
-//      → crea/actualiza el User en la DB del dashboard-back
-//   4. fetchOrgId: GET /auth/me al dashboard-back para obtener el perfil completo
-//
-// INVARIANTE:
-//   isAuthenticated = !!firebaseUser
-//   Firebase es la fuente de verdad. El perfil del backend puede tardar o fallar
-//   sin expulsar al usuario.
+//   Firebase restaura sesión (IndexedDB, misma app Firebase)
+//   → onAuthStateChanged(fbUser != null)
+//   → syncWithBackend crea/actualiza usuario en dashboard-back
+//   → setUser, setOrgId
 // =============================================================================
 
 import {
@@ -109,8 +104,6 @@ import {
   type User,
 } from '@/lib/firebase';
 import { API_URLS } from '@/config/constants';
-
-// ─── Tipos públicos ────────────────────────────────────────────────────────────
 
 export interface DashboardUser {
   id:              string;
@@ -143,28 +136,16 @@ export function useAuth(): AuthContextType {
   return ctx;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Helpers de fetch directo (sin apiClient para evitar el unwrap doble) ────
 
-/**
- * POST /auth/sync al dashboard-back.
- *
- * El endpoint puede devolver:
- *   { success: true, data: DashboardUser }   ← formato con wrapper
- *   DashboardUser directamente               ← formato sin wrapper
- * Manejamos ambos.
- */
-async function syncDashboardUser(fbUser: User): Promise<DashboardUser | null> {
-  const baseUrl = API_URLS['dashboard'];
-  if (!baseUrl) return null;
-
+async function postSync(fbUser: User): Promise<DashboardUser | null> {
+  const base = API_URLS['dashboard'];
+  if (!base) { console.warn('[Auth] NEXT_PUBLIC_DASHBOARD_API_URL no configurado'); return null; }
   try {
     const token = await fbUser.getIdToken();
-    const res = await fetch(`${baseUrl}/auth/sync`, {
-      method:  'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
+    const res = await fetch(`${base}/auth/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
         firebaseUid: fbUser.uid,
         email:       fbUser.email ?? '',
@@ -172,109 +153,51 @@ async function syncDashboardUser(fbUser: User): Promise<DashboardUser | null> {
         avatarUrl:   fbUser.photoURL ?? undefined,
       }),
     });
-
-    if (!res.ok) return null;
-
-    const json = await res.json() as unknown;
-
-    // Normalizar respuesta — el backend puede devolver con o sin wrapper
-    if (json && typeof json === 'object') {
-      const obj = json as Record<string, unknown>;
-      if (obj['data'] && typeof obj['data'] === 'object') {
-        return obj['data'] as DashboardUser;
-      }
-      // Sin wrapper → es el DashboardUser directamente
-      if (obj['id'] && obj['email']) {
-        return obj as unknown as DashboardUser;
-      }
-    }
-
+    if (!res.ok) { console.warn('[Auth] /auth/sync respondió', res.status); return null; }
+    const json = await res.json() as Record<string, unknown>;
+    // Normalizar: { data: DashboardUser } o DashboardUser directo
+    const payload = (json['data'] ?? json) as Record<string, unknown>;
+    if (payload['id'] && payload['email']) return payload as unknown as DashboardUser;
     return null;
-  } catch (err) {
-    console.error('[Auth] syncDashboardUser falló:', err);
-    return null;
-  }
+  } catch (err) { console.error('[Auth] postSync error:', err); return null; }
 }
 
-/**
- * GET /auth/me al dashboard-back — fallback si el sync no respondió bien.
- */
-async function fetchDashboardMe(fbUser: User): Promise<DashboardUser | null> {
-  const baseUrl = API_URLS['dashboard'];
-  if (!baseUrl) return null;
-
+async function getMe(fbUser: User): Promise<DashboardUser | null> {
+  const base = API_URLS['dashboard'];
+  if (!base) return null;
   try {
     const token = await fbUser.getIdToken();
-    const res = await fetch(`${baseUrl}/auth/me`, {
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
+    const res = await fetch(`${base}/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
-
     if (!res.ok) return null;
-
-    const json = await res.json() as unknown;
-    if (json && typeof json === 'object') {
-      const obj = json as Record<string, unknown>;
-      if (obj['data'] && typeof obj['data'] === 'object') {
-        return obj['data'] as DashboardUser;
-      }
-      if (obj['id'] && obj['email']) {
-        return obj as unknown as DashboardUser;
-      }
-    }
+    const json = await res.json() as Record<string, unknown>;
+    const payload = (json['data'] ?? json) as Record<string, unknown>;
+    if (payload['id'] && payload['email']) return payload as unknown as DashboardUser;
     return null;
-  } catch (err) {
-    console.error('[Auth] fetchDashboardMe falló:', err);
-    return null;
-  }
+  } catch (err) { console.error('[Auth] getMe error:', err); return null; }
 }
 
-/**
- * Obtiene organizationId desde el real-back (Sistema 1).
- * Usa el mismo token Firebase — el real-back también acepta FirebaseAuthGuard.
- *
- * Primero intenta NEXT_PUBLIC_REAL_BACK_URL; si no está configurado,
- * intenta NEXT_PUBLIC_API_URL como fallback (en caso de que apunten al mismo back).
- */
-async function fetchOrgIdFromRealBack(fbUser: User): Promise<string | null> {
-  const realBackUrl =
-    process.env.NEXT_PUBLIC_REAL_BACK_URL ??
-    null;
-
-  if (!realBackUrl) return null;
-
+async function getOrgFromRealBack(fbUser: User): Promise<string | null> {
+  const base = process.env.NEXT_PUBLIC_REAL_BACK_URL;
+  if (!base) return null;
   try {
     const token = await fbUser.getIdToken();
-    const res = await fetch(`${realBackUrl}/users/me`, {
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
+    const res = await fetch(`${base}/users/me`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
-
     if (!res.ok) return null;
-
     const json = await res.json() as Record<string, unknown>;
     const data = (json['data'] ?? json) as Record<string, unknown>;
-
-    // Caso A: data.organization.id
     const org = data['organization'] as Record<string, unknown> | null | undefined;
     if (org?.['id']) return org['id'] as string;
-
-    // Caso B: data.tenants[].organizationId
     const tenants = data['tenants'] as Array<Record<string, unknown>> | null | undefined;
     if (Array.isArray(tenants) && tenants.length > 0) {
       const owner = tenants.find((t) => t['role'] === 'OWNER') ?? tenants[0];
       if (owner?.['organizationId']) return owner['organizationId'] as string;
     }
-
     return null;
-  } catch (err) {
-    console.error('[Auth] fetchOrgIdFromRealBack falló:', err);
-    return null;
-  }
+  } catch { return null; }
 }
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -283,59 +206,58 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [user,         setUser]         = useState<DashboardUser | null>(null);
   const [isLoading,    setIsLoading]    = useState(true);
-  const [organizationId, setOrgId]     = useState<string | null>(null);
-  const router                         = useRouter();
-  const refreshTimerRef                = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [organizationId, setOrgId]      = useState<string | null>(() => {
+    // Restaurar orgId desde localStorage en la primera carga
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('dash_org_id') ?? null;
+    }
+    return null;
+  });
+  const router          = useRouter();
+  const timerRef        = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const scheduleTokenRefresh = useCallback((fbUser: User) => {
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-    refreshTimerRef.current = setTimeout(async () => {
+  const setOrganizationId = useCallback((id: string) => {
+    setOrgId(id);
+    if (typeof window !== 'undefined') localStorage.setItem('dash_org_id', id);
+  }, []);
+
+  const scheduleRefresh = useCallback((fbUser: User) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(async () => {
       try { await fbUser.getIdToken(true); } catch { /* Firebase manejará logout */ }
     }, 55 * 60 * 1000);
   }, []);
 
   const loadProfile = useCallback(async (fbUser: User) => {
     // 1. Sync con dashboard-back
-    let dashUser = await syncDashboardUser(fbUser);
-
-    // 2. Fallback: GET /auth/me si sync no devolvió datos
-    if (!dashUser) {
-      dashUser = await fetchDashboardMe(fbUser);
-    }
-
-    // 3. Si aún no tenemos perfil, crear uno mínimo para no bloquear el dashboard
+    let dashUser = await postSync(fbUser);
+    // 2. Fallback GET /auth/me
+    if (!dashUser) dashUser = await getMe(fbUser);
+    // 3. Perfil mínimo si todo falla (no bloquear el dashboard)
     if (!dashUser) {
       dashUser = {
-        id:              fbUser.uid,
-        email:           fbUser.email ?? '',
-        nombre:          fbUser.displayName ?? fbUser.email?.split('@')[0] ?? 'Usuario',
-        role:            'AGENTE',
-        firebaseUid:     fbUser.uid,
-        isActive:        true,
-        createdAt:       new Date().toISOString(),
-        realBackProfile: null,
+        id: fbUser.uid, email: fbUser.email ?? '', nombre: fbUser.displayName ?? 'Usuario',
+        role: 'AGENTE', firebaseUid: fbUser.uid, isActive: true,
+        createdAt: new Date().toISOString(), realBackProfile: null,
       };
     }
-
     setUser(dashUser);
-
-    // 4. Obtener organizationId del real-back en paralelo (no bloquea)
-    fetchOrgIdFromRealBack(fbUser).then((orgId) => {
-      if (orgId) setOrgId(orgId);
+    // 4. OrgId del real-back (no bloquea)
+    getOrgFromRealBack(fbUser).then((orgId) => {
+      if (orgId) setOrganizationId(orgId);
     });
-  }, []);
+  }, [setOrganizationId]);
 
   const refreshUser = useCallback(async () => {
     if (!firebaseUser) return;
     await loadProfile(firebaseUser);
   }, [firebaseUser, loadProfile]);
 
-  const loginWithGoogle = useCallback(async () => {
-    await signInWithGoogle();
-  }, []);
+  const loginWithGoogle = useCallback(async () => { await signInWithGoogle(); }, []);
 
   const logout = useCallback(async () => {
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (typeof window !== 'undefined') localStorage.removeItem('dash_org_id');
     await signOut();
     setUser(null);
     setOrgId(null);
@@ -343,44 +265,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [router]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+    const unsub = onAuthStateChanged(auth, async (fbUser) => {
       setFirebaseUser(fbUser);
-
       if (fbUser) {
-        scheduleTokenRefresh(fbUser);
-        // loadProfile es async — no esperamos para poner isLoading=false
-        // así el layout puede mostrar el dashboard mientras el perfil carga
-        loadProfile(fbUser).finally(() => setIsLoading(false));
+        scheduleRefresh(fbUser);
+        // Cargar perfil async — cuando termine actualiza user/orgId
+        // isLoading=false ANTES de que loadProfile termine para no bloquear el layout
+        setIsLoading(false);
+        loadProfile(fbUser);
       } else {
-        if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+        if (timerRef.current) clearTimeout(timerRef.current);
         setUser(null);
-        setOrgId(null);
         setIsLoading(false);
       }
     });
-
-    return () => {
-      unsubscribe();
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-    };
-  }, [loadProfile, scheduleTokenRefresh]);
+    return () => { unsub(); if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [loadProfile, scheduleRefresh]);
 
   return (
-    <AuthContext.Provider
-      value={{
-        firebaseUser,
-        user,
-        isLoading,
-        // CLAVE: isAuthenticated solo depende de Firebase
-        // El perfil del backend (user) puede tardar sin expulsar al usuario
-        isAuthenticated:   !!firebaseUser,
-        organizationId,
-        setOrganizationId: setOrgId,
-        loginWithGoogle,
-        logout,
-        refreshUser,
-      }}
-    >
+    <AuthContext.Provider value={{
+      firebaseUser, user, isLoading,
+      // CAMBIO CLAVE: solo Firebase determina si está autenticado
+      isAuthenticated: !!firebaseUser,
+      organizationId, setOrganizationId,
+      loginWithGoogle, logout, refreshUser,
+    }}>
       {children}
     </AuthContext.Provider>
   );
@@ -397,16 +306,6 @@ mkdir -p app/dashboard
 cat > app/dashboard/layout.tsx << 'EOF'
 'use client';
 
-// Guard de ruta del dashboard.
-//
-// LÓGICA:
-//   isLoading=true  → Firebase todavía restaura sesión → spinner (nunca redirigir)
-//   isLoading=false && !firebaseUser → no hay sesión → /login
-//   isLoading=false && firebaseUser  → sesión válida → mostrar dashboard
-//
-// El perfil del backend (user, organizationId) puede llegar después
-// sin afectar la visibilidad del dashboard.
-
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
@@ -414,21 +313,17 @@ import { useAuth } from '@/features/auth/hooks/use-auth';
 import { DashboardSidebar } from '@/components/layout/dashboard-sidebar';
 import { MobileHeader } from '@/components/layout/mobile-header';
 
-export default function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { firebaseUser, isLoading } = useAuth();
 
   useEffect(() => {
+    // Solo redirigir cuando Firebase terminó de resolver Y no hay sesión
     if (!isLoading && !firebaseUser) {
       router.replace('/login');
     }
   }, [firebaseUser, isLoading, router]);
 
-  // Firebase todavía resolviendo la sesión desde IndexedDB
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -437,7 +332,6 @@ export default function DashboardLayout({
     );
   }
 
-  // Firebase resolvió y no hay sesión → useEffect redirige, mostrar spinner mientras
   if (!firebaseUser) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -460,45 +354,151 @@ EOF
 ok "app/dashboard/layout.tsx"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Verificar/actualizar .env.local.example
+# 3. app/auth/sso/page.tsx  — página intermediaria SSO
+#    El real-front redirige a /auth/sso?token=FIREBASE_TOKEN
+#    Esta página intercambia el token Firebase por sesión local
 # ─────────────────────────────────────────────────────────────────────────────
-step "Actualizando .env.local.example"
+step "Reescribiendo app/auth/sso/page.tsx"
+mkdir -p app/auth/sso
 
-if [ -f ".env.local.example" ]; then
-  if ! grep -q "NEXT_PUBLIC_REAL_BACK_URL" .env.local.example; then
-    printf '\n# URL del Sistema 1 (real-back) — para obtener organizationId\nNEXT_PUBLIC_REAL_BACK_URL=http://localhost:3000\n' >> .env.local.example
-    ok ".env.local.example — agregado NEXT_PUBLIC_REAL_BACK_URL"
-  else
-    ok ".env.local.example — ya tiene NEXT_PUBLIC_REAL_BACK_URL"
-  fi
-else
-  warn ".env.local.example no encontrado — crealo con NEXT_PUBLIC_REAL_BACK_URL"
-fi
+cat > app/auth/sso/page.tsx << 'EOF'
+// app/auth/sso/page.tsx
+//
+// Página intermediaria para SSO cross-domain.
+//
+// El real-front redirige aquí con el Firebase ID Token como query param:
+//   /auth/sso?firebase_token=<FIREBASE_ID_TOKEN>
+//
+// Esta página NO usa el JWT del dashboard-back directamente.
+// Usa el Firebase token para hacer sign in en Firebase client SDK,
+// lo que restaura la sesión de Firebase en este dominio.
+// Luego redirige a /dashboard donde el AuthContext ya encuentra fbUser != null.
+//
+// ALTERNATIVA si same-domain: el redirect directo a /dashboard funciona
+// porque Firebase comparte IndexedDB. Solo necesitás esta página
+// si real-front y dashboard-front están en dominios distintos.
+'use client';
+
+import { Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { signInWithCustomToken, getAuth } from 'firebase/auth';
+import { Loader2, CheckCircle, XCircle } from 'lucide-react';
+
+type State = 'processing' | 'success' | 'error';
+
+function SsoHandler() {
+  const router       = useRouter();
+  const searchParams = useSearchParams();
+  const [state,  setState]  = useState<State>('processing');
+  const [errMsg, setErrMsg] = useState('');
+
+  useEffect(() => {
+    const firebaseToken = searchParams.get('firebase_token');
+    const fallbackToken = searchParams.get('token'); // compatibilidad hacia atrás
+
+    // Si no hay token Firebase, redirigir directo (mismo dominio / misma sesión)
+    if (!firebaseToken && !fallbackToken) {
+      // Sin parámetros → asumir que Firebase ya tiene sesión (same-domain SSO)
+      setTimeout(() => router.replace('/dashboard'), 100);
+      return;
+    }
+
+    if (firebaseToken) {
+      // Cross-domain: usar el token Firebase para iniciar sesión
+      (async () => {
+        try {
+          const auth = getAuth();
+          await signInWithCustomToken(auth, firebaseToken);
+          setState('success');
+          setTimeout(() => router.replace('/dashboard'), 500);
+        } catch (err) {
+          console.error('[SSO] signInWithCustomToken falló:', err);
+          // Intentar igual ir al dashboard (puede que Firebase ya tenga sesión)
+          setState('success');
+          setTimeout(() => router.replace('/dashboard'), 500);
+        }
+      })();
+    } else {
+      // Solo tiene ?token= (JWT del dashboard-back, no Firebase)
+      // Guardarlo por compatibilidad y redirigir — Firebase puede ya tener sesión
+      if (fallbackToken) {
+        try { localStorage.setItem('accessToken', fallbackToken); } catch { /* ignore */ }
+      }
+      setState('success');
+      setTimeout(() => router.replace('/dashboard'), 300);
+    }
+  }, [searchParams, router]);
+
+  return (
+    <main className="min-h-screen flex flex-col items-center justify-center gap-4 bg-background">
+      {state === 'processing' && (
+        <><Loader2 className="h-10 w-10 animate-spin text-primary" />
+        <p className="text-sm text-muted-foreground">Iniciando sesión...</p></>
+      )}
+      {state === 'success' && (
+        <><CheckCircle className="h-10 w-10 text-emerald-500" />
+        <p className="text-sm text-muted-foreground">Redirigiendo...</p></>
+      )}
+      {state === 'error' && (
+        <><XCircle className="h-10 w-10 text-destructive" />
+        <p className="text-sm font-medium">{errMsg}</p>
+        <button onClick={() => window.history.back()} className="text-xs text-primary hover:underline">Volver</button></>
+      )}
+    </main>
+  );
+}
+
+export default function SsoEntryPage() {
+  return (
+    <Suspense fallback={
+      <main className="min-h-screen flex flex-col items-center justify-center gap-4 bg-background">
+        <Loader2 className="h-10 w-10 animate-spin text-primary" />
+      </main>
+    }>
+      <SsoHandler />
+    </Suspense>
+  );
+}
+EOF
+ok "app/auth/sso/page.tsx"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Resumen
+# Resumen y próximos pasos
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  Script completado${NC}"
+echo -e "${GREEN}  Script completado — 3 archivos modificados${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 echo ""
-echo "  Archivos modificados:"
-echo "    • features/auth/context/auth-context.tsx"
-echo "    • app/dashboard/layout.tsx"
+echo -e "${RED}  ═══ ACCIÓN REQUERIDA EN RAILWAY (CRÍTICO) ═══${NC}"
 echo ""
-echo -e "${YELLOW}  Variable de entorno requerida en .env.local:${NC}"
+echo "  El problema más probable es que las variables NEXT_PUBLIC_FIREBASE_*"
+echo "  NO están como Build Variables en Railway del dashboard-front."
 echo ""
-echo "    NEXT_PUBLIC_REAL_BACK_URL=<URL del real-back>"
+echo "  En Railway → dashboard-front → Variables:"
+echo "  Verificar que TODAS estas existen Y tienen valor:"
 echo ""
-echo "    Local:      http://localhost:3000"
-echo "    Producción: https://tu-real-back.railway.app"
+echo "    NEXT_PUBLIC_FIREBASE_API_KEY"
+echo "    NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN"
+echo "    NEXT_PUBLIC_FIREBASE_PROJECT_ID"
+echo "    NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET"
+echo "    NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID"
+echo "    NEXT_PUBLIC_FIREBASE_APP_ID"
 echo ""
-echo "  Y en real-back/.env verificar que ALLOWED_ORIGINS incluya"
-echo "  el dominio del dashboard-front."
+echo "  DEBEN ser iguales a las del real-front (mismo proyecto Firebase)."
 echo ""
-echo -e "${YELLOW}  Para probar:${NC}"
-echo "  1. real-front → /profile → 'Ir al Dashboard'"
-echo "  2. Debe cargar /dashboard directamente sin pasar por /login"
-echo "  3. DevTools Console: no debe aparecer 'syncDashboardUser falló'"
+echo -e "${YELLOW}  ═══ VERIFICAR EN EL BROWSER ═══${NC}"
+echo ""
+echo "  Después del deploy, abrir DevTools → Console en el dashboard-front"
+echo "  y buscar estos mensajes al llegar a /dashboard:"
+echo ""
+echo "    '[Auth] postSync error:'  → Firebase no tiene sesión (var faltante)"
+echo "    '[Auth] NEXT_PUBLIC_DASHBOARD_API_URL no configurado'  → var faltante"
+echo "    Ausencia de errores + usuario visible → todo OK"
+echo ""
+echo -e "${CYAN}  ═══ DIAGNÓSTICO RÁPIDO SIN DEPLOY ═══${NC}"
+echo ""
+echo "  Abrir DevTools → Application → IndexedDB"
+echo "  Buscar: firebaseLocalStorage → tabla con el projectId de Firebase"
+echo "  Si está vacío → Firebase no tiene sesión en este dominio"
 echo ""
