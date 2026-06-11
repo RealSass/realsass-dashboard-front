@@ -1,22 +1,14 @@
 'use client';
 
-// Login del dashboard-front
-// Usa Google (Firebase) en el CLIENTE para obtener el Firebase ID Token,
-// luego lo intercambia por JWT del dashboard-back via /auth/firebase-sso.
-
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Loader2, Building2 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { toast } from 'sonner';
-import { useAuth } from '@/features/auth/hooks/use-auth';
+import { useRouter }           from 'next/navigation';
+import { Loader2, Building2 }  from 'lucide-react';
+import { Button }              from '@/components/ui/button';
+import { toast }               from 'sonner';
+import { useAuth }             from '@/features/auth/hooks/use-auth';
 
-const ACCESS_KEY  = 'dash_access_token';
-const REFRESH_KEY = 'dash_refresh_token';
-
-function getBaseUrl(): string {
-  return (process.env.NEXT_PUBLIC_DASHBOARD_API_URL ?? 'http://localhost:3001/api/v1')
-    .replace(/\/+$/, '');
+function getBase(): string {
+  return (process.env.NEXT_PUBLIC_DASHBOARD_API_URL ?? '').replace(/\/+$/, '');
 }
 
 export default function LoginPage() {
@@ -25,19 +17,17 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!isLoading && isAuthenticated) {
-      router.replace('/dashboard');
-    }
+    if (!isLoading && isAuthenticated) router.replace('/dashboard');
   }, [isAuthenticated, isLoading, router]);
 
-  const handleGoogleLogin = async () => {
+  const handleGoogle = async () => {
     setBusy(true);
     try {
-      // Importar Firebase dinámicamente (solo si la app lo necesita para login local)
+      // Importar Firebase solo cuando el usuario hace click (code split)
       const { initializeApp, getApps, getApp } = await import('firebase/app');
       const { getAuth, GoogleAuthProvider, signInWithPopup } = await import('firebase/auth');
 
-      const firebaseConfig = {
+      const cfg = {
         apiKey:            process.env.NEXT_PUBLIC_FIREBASE_API_KEY!,
         authDomain:        process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN!,
         projectId:         process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID!,
@@ -46,19 +36,17 @@ export default function LoginPage() {
         appId:             process.env.NEXT_PUBLIC_FIREBASE_APP_ID!,
       };
 
-      const app  = getApps().length ? getApp() : initializeApp(firebaseConfig);
-      const auth = getAuth(app);
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: 'select_account' });
+      const fbApp  = getApps().length ? getApp() : initializeApp(cfg);
+      const auth   = getAuth(fbApp);
+      const result = await signInWithPopup(auth, new GoogleAuthProvider());
+      const idToken = await result.user.getIdToken();
 
-      const result = await signInWithPopup(auth, provider);
-      const firebaseToken = await result.user.getIdToken();
-
-      // Intercambiar Firebase token por JWT del dashboard-back
-      const res = await fetch(`${getBaseUrl()}/auth/firebase-sso`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ firebaseIdToken: firebaseToken }),
+      // Llamar firebase-sso → el backend escribe las cookies HttpOnly
+      const res = await fetch(`${getBase()}/auth/firebase-sso`, {
+        method:      'POST',
+        credentials: 'include', // ← necesario para recibir las cookies
+        headers:     { 'Content-Type': 'application/json' },
+        body:        JSON.stringify({ firebaseIdToken: idToken }),
       });
 
       if (!res.ok) {
@@ -66,19 +54,7 @@ export default function LoginPage() {
         throw new Error(body.message ?? `Error ${res.status}`);
       }
 
-      const json = await res.json() as Record<string, unknown>;
-      const data = (json['data'] ?? json) as Record<string, unknown>;
-      const access  = data['accessToken']  as string | undefined;
-      const refresh = data['refreshToken'] as string | undefined;
-
-      if (!access || !refresh) throw new Error('Respuesta inválida del servidor');
-
-      localStorage.setItem(ACCESS_KEY,  access);
-      localStorage.setItem(REFRESH_KEY, refresh);
-      localStorage.setItem('accessToken',  access);   // legacy compat
-      localStorage.setItem('refreshToken', refresh);  // legacy compat
-
-      // Reload para que AuthProvider lea los nuevos tokens
+      // Cookie seteada → redirigir (AuthContext leerá la cookie en /dashboard)
       window.location.href = '/dashboard';
 
     } catch (err) {
@@ -109,16 +85,8 @@ export default function LoginPage() {
             <p className="text-sm text-muted-foreground mt-1">Plataforma de gestión inmobiliaria</p>
           </div>
         </div>
-
-        <Button
-          onClick={handleGoogleLogin}
-          disabled={busy}
-          className="w-full h-11 gap-3 text-sm font-medium"
-          variant="outline"
-        >
-          {busy ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
+        <Button onClick={handleGoogle} disabled={busy} className="w-full h-11 gap-3" variant="outline">
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : (
             <svg className="h-4 w-4" viewBox="0 0 24 24">
               <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
               <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
@@ -128,10 +96,7 @@ export default function LoginPage() {
           )}
           {busy ? 'Iniciando sesión...' : 'Continuar con Google'}
         </Button>
-
-        <p className="text-center text-xs text-muted-foreground">
-          Solo para usuarios autorizados de la plataforma.
-        </p>
+        <p className="text-center text-xs text-muted-foreground">Solo para usuarios autorizados.</p>
       </div>
     </main>
   );

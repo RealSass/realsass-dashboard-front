@@ -1,23 +1,14 @@
 'use client';
 
 // =============================================================================
-// auth-context.tsx — JWT-based (sin Firebase client SDK)
+// auth-context.tsx — Cookie-based auth (sin localStorage, sin Firebase client)
 //
-// El dashboard-back emite JWT propio via POST /auth/firebase-sso.
-// El dashboard-front lo guarda en localStorage y lo usa en cada request.
-// No dependemos de Firebase en el cliente — resuelve el problema cross-domain.
+// El dashboard-back escribe access_token como cookie HttpOnly en /auth/firebase-sso.
+// El browser la envía automáticamente en cada request con credentials:'include'.
+// No hay que leer ni escribir tokens manualmente.
 //
-// TOKENS EN LOCALSTORAGE:
-//   'dash_access_token'   → JWT de acceso (15 min)
-//   'dash_refresh_token'  → JWT de refresh (7 días)
-//   'accessToken'         → alias legacy (escrito por login/sso pages)
-//   'refreshToken'        → alias legacy
-//
-// FLUJO SSO DESDE real-front:
-//   real-front → POST /auth/firebase-sso → JWT
-//   real-front → redirect → /auth/sso?token=JWT&refresh=REFRESH
-//   /auth/sso  → localStorage.setItem → redirect a /dashboard
-//   AuthContext → lee JWT → GET /auth/me → isAuthenticated = true ✓
+// GET /auth/me → 200 si la cookie es válida → usuario autenticado
+// GET /auth/me → 401 si la cookie expiró → intentar refresh → si falla → /login
 // =============================================================================
 
 import {
@@ -31,40 +22,6 @@ import {
 } from 'react';
 import { useRouter } from 'next/navigation';
 
-// ─── Keys de localStorage ─────────────────────────────────────────────────────
-const A_KEY = 'dash_access_token';
-const R_KEY = 'dash_refresh_token';
-const O_KEY = 'dash_org_id';
-
-function getBase(): string {
-  return (process.env.NEXT_PUBLIC_DASHBOARD_API_URL ?? 'http://localhost:3001/api/v1')
-    .replace(/\/+$/, '');
-}
-
-// Lee el access token — preferir key nueva, fallback a legacy
-function readAccess(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(A_KEY) ?? localStorage.getItem('accessToken') ?? null;
-}
-
-function readRefresh(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(R_KEY) ?? localStorage.getItem('refreshToken') ?? null;
-}
-
-function writeTokens(access: string, refresh: string): void {
-  localStorage.setItem(A_KEY, access);
-  localStorage.setItem(R_KEY, refresh);
-  localStorage.setItem('accessToken', access);
-  localStorage.setItem('refreshToken', refresh);
-}
-
-function wipeTokens(): void {
-  [A_KEY, R_KEY, O_KEY, 'accessToken', 'refreshToken'].forEach(k => localStorage.removeItem(k));
-}
-
-// ─── Tipos ────────────────────────────────────────────────────────────────────
-
 export interface DashboardUser {
   id:          string;
   email:       string;
@@ -77,15 +34,14 @@ export interface DashboardUser {
 }
 
 interface AuthContextType {
-  // Alias para compatibilidad con código existente que usa firebaseUser
-  firebaseUser:      DashboardUser | null;
   user:              DashboardUser | null;
+  firebaseUser:      DashboardUser | null; // alias para compatibilidad
   isLoading:         boolean;
   isAuthenticated:   boolean;
   organizationId:    string | null;
   setOrganizationId: (id: string) => void;
   loginWithGoogle:   () => Promise<void>;
-  logout:            () => void;
+  logout:            () => Promise<void>;
   refreshUser:       () => Promise<void>;
 }
 
@@ -97,137 +53,141 @@ export function useAuth(): AuthContextType {
   return c;
 }
 
-// ─── Fetch helpers ────────────────────────────────────────────────────────────
+// ─── Constante de URL ─────────────────────────────────────────────────────────
 
-async function callMe(token: string): Promise<DashboardUser | null> {
+function getBase(): string {
+  return (process.env.NEXT_PUBLIC_DASHBOARD_API_URL ?? '')
+    .replace(/\/+$/, '');
+}
+
+const ORG_KEY = 'dash_org_id';
+
+// ─── Fetch con credentials (envía cookies automáticamente) ───────────────────
+
+async function fetchMe(): Promise<DashboardUser | null> {
+  const base = getBase();
+  if (!base) { console.error('[Auth] NEXT_PUBLIC_DASHBOARD_API_URL no configurado'); return null; }
   try {
-    const r = await fetch(`${getBase()}/auth/me`, {
-      headers: { Authorization: `Bearer ${token}` },
+    const r = await fetch(`${base}/auth/me`, {
+      credentials: 'include', // ← envía la cookie access_token
     });
     if (!r.ok) return null;
     const j = await r.json() as Record<string, unknown>;
     const d = (j['data'] ?? j) as Record<string, unknown>;
     if (d['id'] && d['email']) return d as unknown as DashboardUser;
     return null;
-  } catch { return null; }
+  } catch (err) {
+    console.error('[Auth] fetchMe error:', err);
+    return null;
+  }
 }
 
-async function callRefresh(refresh: string): Promise<{ accessToken: string; refreshToken: string } | null> {
+async function doRefresh(): Promise<boolean> {
+  const base = getBase();
+  if (!base) return false;
   try {
-    const r = await fetch(`${getBase()}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken: refresh }),
+    const r = await fetch(`${base}/auth/refresh`, {
+      method:      'POST',
+      credentials: 'include', // ← envía refresh_token cookie, recibe nueva access_token cookie
+      headers:     { 'Content-Type': 'application/json' },
+      body:        JSON.stringify({}), // body vacío — el token viene de la cookie
     });
-    if (!r.ok) return null;
-    const j = await r.json() as Record<string, unknown>;
-    const d = (j['data'] ?? j) as Record<string, unknown>;
-    if (d['accessToken'] && d['refreshToken']) {
-      return { accessToken: d['accessToken'] as string, refreshToken: d['refreshToken'] as string };
-    }
-    return null;
-  } catch { return null; }
+    return r.ok;
+  } catch { return false; }
+}
+
+async function doLogout(): Promise<void> {
+  const base = getBase();
+  if (!base) return;
+  try {
+    await fetch(`${base}/auth/logout`, {
+      method:      'POST',
+      credentials: 'include',
+    });
+  } catch { /* ignorar errores de red en logout */ }
 }
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user,      setUser]    = useState<DashboardUser | null>(null);
-  const [isLoading, setLoad]    = useState(true);
-  const [orgId,     setOrgId]   = useState<string | null>(null);
-  const router   = useRouter();
-  const interval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [user,      setUser]  = useState<DashboardUser | null>(null);
+  const [isLoading, setLoad]  = useState(true);
+  const [orgId,     setOrgId] = useState<string | null>(null);
+  const router    = useRouter();
+  const intervalR = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const setOrganizationId = useCallback((id: string) => {
     setOrgId(id);
-    if (typeof window !== 'undefined') localStorage.setItem(O_KEY, id);
+    if (typeof window !== 'undefined') localStorage.setItem(ORG_KEY, id);
   }, []);
 
-  // ── Carga inicial ───────────────────────────────────────────────────────────
+  // Carga inicial: probar la cookie actual
   useEffect(() => {
     (async () => {
       if (typeof window === 'undefined') { setLoad(false); return; }
 
-      // Leer orgId guardado
-      const storedOrg = localStorage.getItem(O_KEY);
+      // Restaurar orgId guardado
+      const storedOrg = localStorage.getItem(ORG_KEY);
       if (storedOrg) setOrgId(storedOrg);
 
-      let access = readAccess();
-      if (!access) { setLoad(false); return; }
+      // Intentar GET /auth/me con la cookie actual
+      let dashUser = await fetchMe();
 
-      // Intentar GET /auth/me con el token actual
-      let dashUser = await callMe(access);
-
-      // Token expirado → refresh
+      // Cookie expirada → intentar refresh
       if (!dashUser) {
-        const refresh = readRefresh();
-        if (refresh) {
-          const fresh = await callRefresh(refresh);
-          if (fresh) {
-            writeTokens(fresh.accessToken, fresh.refreshToken);
-            access = fresh.accessToken;
-            dashUser = await callMe(access);
-          }
-        }
+        const ok = await doRefresh();
+        if (ok) dashUser = await fetchMe();
       }
 
-      if (dashUser) {
-        setUser(dashUser);
-      } else {
-        wipeTokens();
-      }
+      setUser(dashUser ?? null);
       setLoad(false);
     })();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line
 
-  // ── Auto-refresh cada 13 min (JWT expira a los 15) ─────────────────────────
+  // Auto-refresh cada 13 minutos (JWT expira a los 15)
   useEffect(() => {
     if (!user) return;
-    interval.current = setInterval(async () => {
-      const refresh = readRefresh();
-      if (!refresh) { logout(); return; }
-      const fresh = await callRefresh(refresh);
-      if (fresh) {
-        writeTokens(fresh.accessToken, fresh.refreshToken);
-      } else {
-        logout();
+    intervalR.current = setInterval(async () => {
+      const ok = await doRefresh();
+      if (!ok) {
+        setUser(null);
+        router.push('/login');
       }
     }, 13 * 60 * 1000);
-    return () => { if (interval.current) clearInterval(interval.current); };
-  }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { if (intervalR.current) clearInterval(intervalR.current); };
+  }, [user, router]);
 
   const refreshUser = useCallback(async () => {
-    const access = readAccess();
-    if (!access) return;
-    const u = await callMe(access);
+    const u = await fetchMe();
     if (u) setUser(u);
   }, []);
 
-  const logout = useCallback(() => {
-    if (interval.current) clearInterval(interval.current);
-    wipeTokens();
+  const logout = useCallback(async () => {
+    if (intervalR.current) clearInterval(intervalR.current);
+    await doLogout(); // limpia cookies en el servidor
+    localStorage.removeItem(ORG_KEY);
     setUser(null);
     setOrgId(null);
     router.push('/login');
   }, [router]);
 
-  // loginWithGoogle: redirige al /login del dashboard donde el usuario
-  // puede hacer Google login directamente (el login/page.tsx lo maneja)
   const loginWithGoogle = useCallback(async () => {
     router.push('/login');
   }, [router]);
 
-  const val: AuthContextType = {
-    firebaseUser:      user,   // alias — mismo objeto para compatibilidad
-    user,
-    isLoading,
-    isAuthenticated:   !!user, // JWT-based: si tenemos user, estamos autenticados
-    organizationId:    orgId,
-    setOrganizationId,
-    loginWithGoogle,
-    logout,
-    refreshUser,
-  };
-
-  return <Ctx.Provider value={val}>{children}</Ctx.Provider>;
+  return (
+    <Ctx.Provider value={{
+      user,
+      firebaseUser:    user,
+      isLoading,
+      isAuthenticated: !!user,
+      organizationId:  orgId,
+      setOrganizationId,
+      loginWithGoogle,
+      logout,
+      refreshUser,
+    }}>
+      {children}
+    </Ctx.Provider>
+  );
 }
