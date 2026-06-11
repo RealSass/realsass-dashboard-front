@@ -9,14 +9,13 @@ import { MobileHeader } from '@/components/layout/mobile-header';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const { firebaseUser, isLoading } = useAuth();
+  const { isAuthenticated, isLoading } = useAuth();
 
   useEffect(() => {
-    // Solo redirigir cuando Firebase terminó de resolver Y no hay sesión
-    if (!isLoading && !firebaseUser) {
+    if (!isLoading && !isAuthenticated) {
       router.replace('/login');
     }
-  }, [firebaseUser, isLoading, router]);
+  }, [isAuthenticated, isLoading, router]);
 
   if (isLoading) {
     return (
@@ -26,7 +25,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     );
   }
 
-  if (!firebaseUser) {
+  if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
