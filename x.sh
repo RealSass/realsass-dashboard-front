@@ -1,388 +1,741 @@
 #!/usr/bin/env bash
-# =============================================================================
-# fix-cookies-dashboard-front.sh
-# Repo: real-dashboard-front (Next.js)
-#
-# CAMBIO: AuthContext usa cookies HttpOnly en lugar de localStorage.
-# El browser envía la cookie access_token automáticamente en cada request
-# con credentials: 'include' — no hay que leer/escribir nada manualmente.
-#
-# ARCHIVOS MODIFICADOS:
-#   features/auth/context/auth-context.tsx
-#   app/auth/sso/page.tsx
-#   app/login/page.tsx
-# =============================================================================
 set -euo pipefail
-GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
-ok()   { echo -e "${GREEN}✓${NC} $1"; }
-step() { echo -e "\n${YELLOW}▶${NC} $1"; }
 
-[ -f "package.json" ] || { echo "Ejecutá desde el root de real-dashboard-front"; exit 1; }
+APP_DIR="${1:-.}"
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+log() { echo -e "${YELLOW}[i]${NC} $1"; }
+ok()  { echo -e "${GREEN}[✓]${NC} $1"; }
+warn(){ echo -e "${YELLOW}[!]${NC} $1"; }
+err() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. features/auth/context/auth-context.tsx — cookie-based
-# ─────────────────────────────────────────────────────────────────────────────
-step "Reescribiendo features/auth/context/auth-context.tsx"
-mkdir -p features/auth/context
+cd "$APP_DIR"
+[ -f "package.json" ] || err "No se encontró package.json. Corré este script desde la raíz de real-dashboard-front."
+[ -d "features" ] || err "No se encontró la carpeta features/. ¿Estás seguro que esto es real-dashboard-front?"
 
-cat > features/auth/context/auth-context.tsx << 'EOF'
-'use client';
+# =============================================================================
+# 1. features/store/types.ts
+# =============================================================================
+log "Creando features/store/types.ts..."
+mkdir -p features/store
+cat > features/store/types.ts << 'EOF'
+// features/store/types.ts
+// Tipos del módulo Tienda (real-ecommerce-back). Ajustar si el contrato real difiere.
 
-// =============================================================================
-// auth-context.tsx — Cookie-based auth (sin localStorage, sin Firebase client)
-//
-// El dashboard-back escribe access_token como cookie HttpOnly en /auth/firebase-sso.
-// El browser la envía automáticamente en cada request con credentials:'include'.
-// No hay que leer ni escribir tokens manualmente.
-//
-// GET /auth/me → 200 si la cookie es válida → usuario autenticado
-// GET /auth/me → 401 si la cookie expiró → intentar refresh → si falla → /login
-// =============================================================================
-
-import {
-  createContext,
-  useContext,
-  useState,
-  useEffect,
-  useCallback,
-  useRef,
-  type ReactNode,
-} from 'react';
-import { useRouter } from 'next/navigation';
-
-export interface DashboardUser {
-  id:          string;
-  email:       string;
-  nombre:      string;
-  role:        string;
-  firebaseUid: string | null;
-  isActive:    boolean;
-  createdAt:   string;
-  realBackProfile: Record<string, unknown> | null;
+export interface ProductVariant {
+  id: string;
+  sku: string;
+  name: string;
+  priceMinor: number;
+  currency: string;
+  quantityAvailable: number;
 }
 
-interface AuthContextType {
-  user:              DashboardUser | null;
-  firebaseUser:      DashboardUser | null; // alias para compatibilidad
-  isLoading:         boolean;
-  isAuthenticated:   boolean;
-  organizationId:    string | null;
-  setOrganizationId: (id: string) => void;
-  loginWithGoogle:   () => Promise<void>;
-  logout:            () => Promise<void>;
-  refreshUser:       () => Promise<void>;
+export interface Product {
+  id: string;
+  organizationId: string;
+  name: string;
+  description?: string | null;
+  slug: string;
+  isActive: boolean;
+  categoryId?: string | null;
+  variants: ProductVariant[];
+  createdAt: string;
+  updatedAt: string;
 }
 
-const Ctx = createContext<AuthContextType | undefined>(undefined);
-
-export function useAuth(): AuthContextType {
-  const c = useContext(Ctx);
-  if (!c) throw new Error('useAuth debe usarse dentro de AuthProvider');
-  return c;
+export interface ProductInput {
+  name: string;
+  description?: string;
+  categoryId?: string;
+  isActive?: boolean;
+  variants: Array<{
+    sku: string;
+    name: string;
+    priceMinor: number;
+    currency: string;
+    quantityAvailable: number;
+  }>;
 }
 
-// ─── Constante de URL ─────────────────────────────────────────────────────────
-
-function getBase(): string {
-  return (process.env.NEXT_PUBLIC_DASHBOARD_API_URL ?? '')
-    .replace(/\/+$/, '');
+export interface ProductFilters {
+  search?: string;
+  categoryId?: string;
+  page?: number;
+  limit?: number;
 }
 
-const ORG_KEY = 'dash_org_id';
+export type OrderStatus =
+  | 'PENDING' | 'PAID' | 'FULFILLED' | 'CANCELLED' | 'REFUNDED';
 
-// ─── Fetch con credentials (envía cookies automáticamente) ───────────────────
+export interface OrderItem {
+  id: string;
+  variantId: string;
+  productName: string;
+  variantName: string;
+  quantity: number;
+  unitPriceMinor: number;
+}
 
-async function fetchMe(): Promise<DashboardUser | null> {
-  const base = getBase();
-  if (!base) { console.error('[Auth] NEXT_PUBLIC_DASHBOARD_API_URL no configurado'); return null; }
-  try {
-    const r = await fetch(`${base}/auth/me`, {
-      credentials: 'include', // ← envía la cookie access_token
-    });
-    if (!r.ok) return null;
-    const j = await r.json() as Record<string, unknown>;
-    const d = (j['data'] ?? j) as Record<string, unknown>;
-    if (d['id'] && d['email']) return d as unknown as DashboardUser;
-    return null;
-  } catch (err) {
-    console.error('[Auth] fetchMe error:', err);
-    return null;
+export interface Order {
+  id: string;
+  organizationId: string;
+  customerId: string;
+  customerEmail?: string | null;
+  status: OrderStatus;
+  totalMinor: number;
+  currency: string;
+  items: OrderItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OrderFilters {
+  status?: OrderStatus;
+  page?: number;
+  limit?: number;
+}
+
+export interface PaginationMeta {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+}
+
+export interface Paginated<T> {
+  items: T[];
+  meta: PaginationMeta;
+}
+EOF
+ok "features/store/types.ts creado"
+
+# =============================================================================
+# 2. features/store/api.ts
+# =============================================================================
+log "Creando features/store/api.ts..."
+cat > features/store/api.ts << 'EOF'
+// features/store/api.ts
+// Cliente HTTP del módulo Tienda. Consume real-ecommerce-back.
+// Ajustar rutas si tus controllers reales difieren del contrato asumido.
+
+import type {
+  Product, ProductInput, ProductFilters,
+  Order, OrderFilters, Paginated,
+} from './types';
+
+const BASE_URL = process.env.NEXT_PUBLIC_ECOMMERCE_API_URL ?? '';
+
+function buildQuery(params: Record<string, unknown>): string {
+  const q = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') q.append(k, String(v));
+  });
+  const s = q.toString();
+  return s ? `?${s}` : '';
+}
+
+async function storeFetch<T>(
+  path: string,
+  options: RequestInit = {},
+  organizationId?: string,
+): Promise<T> {
+  if (!BASE_URL) {
+    throw new Error(
+      'NEXT_PUBLIC_ECOMMERCE_API_URL no está configurado. Agregalo a tu .env.local.',
+    );
   }
+
+  const token = typeof window !== 'undefined'
+    ? await import('@/lib/firebase').then((m) => m.getCurrentUserToken?.()).catch(() => undefined)
+    : undefined;
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(organizationId ? { 'x-organization-id': organizationId } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(options.headers as Record<string, string> | undefined),
+  };
+
+  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  const json = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    const msg =
+      (json as { message?: string })?.message ??
+      (json as { error?: string })?.error ??
+      `Error ${res.status}`;
+    throw new Error(msg);
+  }
+
+  return (json as { data?: T })?.data ?? (json as T);
 }
 
-async function doRefresh(): Promise<boolean> {
-  const base = getBase();
-  if (!base) return false;
-  try {
-    const r = await fetch(`${base}/auth/refresh`, {
-      method:      'POST',
-      credentials: 'include', // ← envía refresh_token cookie, recibe nueva access_token cookie
-      headers:     { 'Content-Type': 'application/json' },
-      body:        JSON.stringify({}), // body vacío — el token viene de la cookie
-    });
-    return r.ok;
-  } catch { return false; }
+// ─── Products ─────────────────────────────────────────────────────────────
+
+export const storeApi = {
+  getProducts: (orgId: string, filters: ProductFilters = {}) =>
+    storeFetch<Paginated<Product>>(`/products${buildQuery(filters)}`, {}, orgId),
+
+  getProduct: (orgId: string, id: string) =>
+    storeFetch<Product>(`/products/${id}`, {}, orgId),
+
+  createProduct: (orgId: string, data: ProductInput) =>
+    storeFetch<Product>('/products', { method: 'POST', body: JSON.stringify(data) }, orgId),
+
+  updateProduct: (orgId: string, id: string, data: Partial<ProductInput>) =>
+    storeFetch<Product>(`/products/${id}`, { method: 'PATCH', body: JSON.stringify(data) }, orgId),
+
+  deleteProduct: (orgId: string, id: string) =>
+    storeFetch<{ message: string }>(`/products/${id}`, { method: 'DELETE' }, orgId),
+
+  updateInventory: (orgId: string, variantId: string, quantityAvailable: number) =>
+    storeFetch<{ message: string }>(
+      `/inventory/${variantId}`,
+      { method: 'PATCH', body: JSON.stringify({ quantityAvailable }) },
+      orgId,
+    ),
+
+  // ─── Orders ───────────────────────────────────────────────────────────────
+
+  getOrders: (orgId: string, filters: OrderFilters = {}) =>
+    storeFetch<Paginated<Order>>(`/orders${buildQuery(filters)}`, {}, orgId),
+
+  getOrder: (orgId: string, id: string) =>
+    storeFetch<Order>(`/orders/${id}`, {}, orgId),
+};
+EOF
+ok "features/store/api.ts creado"
+
+# =============================================================================
+# 3. features/store/hooks.ts
+# =============================================================================
+log "Creando features/store/hooks.ts..."
+cat > features/store/hooks.ts << 'EOF'
+// features/store/hooks.ts
+// TanStack Query hooks del módulo Tienda.
+
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { storeApi } from './api';
+import type { ProductInput, ProductFilters, OrderFilters } from './types';
+
+const KEYS = {
+  products: (orgId: string, filters: ProductFilters) => ['store', 'products', orgId, filters] as const,
+  product: (orgId: string, id: string) => ['store', 'product', orgId, id] as const,
+  orders: (orgId: string, filters: OrderFilters) => ['store', 'orders', orgId, filters] as const,
+  order: (orgId: string, id: string) => ['store', 'order', orgId, id] as const,
+};
+
+export function useProducts(orgId: string | undefined, filters: ProductFilters = {}) {
+  return useQuery({
+    queryKey: KEYS.products(orgId ?? '', filters),
+    queryFn: () => storeApi.getProducts(orgId as string, filters),
+    enabled: !!orgId,
+  });
 }
 
-async function doLogout(): Promise<void> {
-  const base = getBase();
-  if (!base) return;
-  try {
-    await fetch(`${base}/auth/logout`, {
-      method:      'POST',
-      credentials: 'include',
-    });
-  } catch { /* ignorar errores de red en logout */ }
+export function useProduct(orgId: string | undefined, id: string | undefined) {
+  return useQuery({
+    queryKey: KEYS.product(orgId ?? '', id ?? ''),
+    queryFn: () => storeApi.getProduct(orgId as string, id as string),
+    enabled: !!orgId && !!id,
+  });
 }
 
-// ─── Provider ─────────────────────────────────────────────────────────────────
+export function useCreateProduct(orgId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: ProductInput) => storeApi.createProduct(orgId as string, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['store', 'products', orgId] }),
+  });
+}
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user,      setUser]  = useState<DashboardUser | null>(null);
-  const [isLoading, setLoad]  = useState(true);
-  const [orgId,     setOrgId] = useState<string | null>(null);
-  const router    = useRouter();
-  const intervalR = useRef<ReturnType<typeof setInterval> | null>(null);
+export function useUpdateProduct(orgId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<ProductInput> }) =>
+      storeApi.updateProduct(orgId as string, id, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['store', 'products', orgId] }),
+  });
+}
 
-  const setOrganizationId = useCallback((id: string) => {
-    setOrgId(id);
-    if (typeof window !== 'undefined') localStorage.setItem(ORG_KEY, id);
-  }, []);
+export function useDeleteProduct(orgId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => storeApi.deleteProduct(orgId as string, id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['store', 'products', orgId] }),
+  });
+}
 
-  // Carga inicial: probar la cookie actual
-  useEffect(() => {
-    (async () => {
-      if (typeof window === 'undefined') { setLoad(false); return; }
+export function useUpdateInventory(orgId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ variantId, quantityAvailable }: { variantId: string; quantityAvailable: number }) =>
+      storeApi.updateInventory(orgId as string, variantId, quantityAvailable),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['store', 'products', orgId] }),
+  });
+}
 
-      // Restaurar orgId guardado
-      const storedOrg = localStorage.getItem(ORG_KEY);
-      if (storedOrg) setOrgId(storedOrg);
+export function useOrders(orgId: string | undefined, filters: OrderFilters = {}) {
+  return useQuery({
+    queryKey: KEYS.orders(orgId ?? '', filters),
+    queryFn: () => storeApi.getOrders(orgId as string, filters),
+    enabled: !!orgId,
+  });
+}
 
-      // Intentar GET /auth/me con la cookie actual
-      let dashUser = await fetchMe();
+export function useOrder(orgId: string | undefined, id: string | undefined) {
+  return useQuery({
+    queryKey: KEYS.order(orgId ?? '', id ?? ''),
+    queryFn: () => storeApi.getOrder(orgId as string, id as string),
+    enabled: !!orgId && !!id,
+  });
+}
+EOF
+ok "features/store/hooks.ts creado"
 
-      // Cookie expirada → intentar refresh
-      if (!dashUser) {
-        const ok = await doRefresh();
-        if (ok) dashUser = await fetchMe();
-      }
+# =============================================================================
+# 4. app/dashboard/tienda/layout.tsx — tabs (mismo patrón que configuracion/layout.tsx)
+# =============================================================================
+log "Creando app/dashboard/tienda/layout.tsx..."
+mkdir -p app/dashboard/tienda/productos app/dashboard/tienda/pedidos app/dashboard/tienda/preview
+cat > app/dashboard/tienda/layout.tsx << 'EOF'
+'use client';
 
-      setUser(dashUser ?? null);
-      setLoad(false);
-    })();
-  }, []); // eslint-disable-line
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { Package, ClipboardList, Eye, Store } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
-  // Auto-refresh cada 13 minutos (JWT expira a los 15)
-  useEffect(() => {
-    if (!user) return;
-    intervalR.current = setInterval(async () => {
-      const ok = await doRefresh();
-      if (!ok) {
-        setUser(null);
-        router.push('/login');
-      }
-    }, 13 * 60 * 1000);
-    return () => { if (intervalR.current) clearInterval(intervalR.current); };
-  }, [user, router]);
+const TIENDA_TABS = [
+  { name: 'Productos',    href: '/dashboard/tienda/productos', Icon: Package       },
+  { name: 'Pedidos',      href: '/dashboard/tienda/pedidos',    Icon: ClipboardList },
+  { name: 'Vista previa', href: '/dashboard/tienda/preview',    Icon: Eye           },
+] as const;
 
-  const refreshUser = useCallback(async () => {
-    const u = await fetchMe();
-    if (u) setUser(u);
-  }, []);
-
-  const logout = useCallback(async () => {
-    if (intervalR.current) clearInterval(intervalR.current);
-    await doLogout(); // limpia cookies en el servidor
-    localStorage.removeItem(ORG_KEY);
-    setUser(null);
-    setOrgId(null);
-    router.push('/login');
-  }, [router]);
-
-  const loginWithGoogle = useCallback(async () => {
-    router.push('/login');
-  }, [router]);
+export default function TiendaLayout({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
 
   return (
-    <Ctx.Provider value={{
-      user,
-      firebaseUser:    user,
-      isLoading,
-      isAuthenticated: !!user,
-      organizationId:  orgId,
-      setOrganizationId,
-      loginWithGoogle,
-      logout,
-      refreshUser,
-    }}>
+    <div className="p-4 lg:p-6 max-w-6xl mx-auto space-y-6">
+      <div className="flex items-center gap-2">
+        <Store className="h-5 w-5 text-muted-foreground" />
+        <h1 className="text-xl font-semibold tracking-tight">Tienda</h1>
+      </div>
+
+      <div className="flex gap-1 border-b border-border overflow-x-auto">
+        {TIENDA_TABS.map(({ name, href, Icon }) => {
+          const active = pathname === href || pathname.startsWith(href);
+          return (
+            <Link
+              key={href}
+              href={href}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-2 text-sm whitespace-nowrap border-b-2 transition-colors',
+                active
+                  ? 'border-primary text-foreground font-medium'
+                  : 'border-transparent text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <Icon className="h-4 w-4" />
+              {name}
+            </Link>
+          );
+        })}
+      </div>
+
       {children}
-    </Ctx.Provider>
+    </div>
   );
 }
 EOF
-ok "features/auth/context/auth-context.tsx"
+ok "app/dashboard/tienda/layout.tsx creado"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. app/auth/sso/page.tsx — ya no necesita guardar tokens, solo redirige
-# ─────────────────────────────────────────────────────────────────────────────
-step "Reescribiendo app/auth/sso/page.tsx"
-mkdir -p app/auth/sso
-
-cat > app/auth/sso/page.tsx << 'EOF'
-// app/auth/sso/page.tsx
-// El dashboard-back ya escribió la cookie HttpOnly en /auth/firebase-sso.
-// Esta página solo necesita redirigir al dashboard.
-// La cookie viaja con el browser automáticamente.
+# =============================================================================
+# 5. app/dashboard/tienda/productos/page.tsx
+# =============================================================================
+log "Creando app/dashboard/tienda/productos/page.tsx..."
+cat > app/dashboard/tienda/productos/page.tsx << 'EOF'
 'use client';
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { Loader2 }   from 'lucide-react';
+import { useState } from 'react';
+import { Loader2, Plus, AlertCircle, Pencil, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { useAuth } from '@/features/auth/hooks/use-auth';
+import { useProducts, useDeleteProduct } from '@/features/store/hooks';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '@/components/ui/table';
 
-export default function SsoPage() {
-  const router = useRouter();
+export default function ProductosPage() {
+  const { organizationId } = useAuth();
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
 
-  useEffect(() => {
-    // La cookie ya fue seteada por el backend cuando real-front llamó firebase-sso.
-    // Redirigir directamente al dashboard.
-    router.replace('/dashboard');
-  }, [router]);
+  const { data, isLoading, error } = useProducts(organizationId, { search, page, limit: 20 });
+  const deleteProduct = useDeleteProduct(organizationId);
 
-  return (
-    <main className="min-h-screen flex flex-col items-center justify-center gap-4 bg-background">
-      <Loader2 className="h-10 w-10 animate-spin text-primary" />
-      <p className="text-sm text-muted-foreground">Iniciando sesión...</p>
-    </main>
-  );
-}
-EOF
-ok "app/auth/sso/page.tsx"
+  const items = data?.items ?? [];
+  const meta = data?.meta;
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. app/login/page.tsx — login directo en el dashboard-front
-# ─────────────────────────────────────────────────────────────────────────────
-step "Reescribiendo app/login/page.tsx"
-mkdir -p app/login
-
-cat > app/login/page.tsx << 'EOF'
-'use client';
-
-import { useEffect, useState } from 'react';
-import { useRouter }           from 'next/navigation';
-import { Loader2, Building2 }  from 'lucide-react';
-import { Button }              from '@/components/ui/button';
-import { toast }               from 'sonner';
-import { useAuth }             from '@/features/auth/hooks/use-auth';
-
-function getBase(): string {
-  return (process.env.NEXT_PUBLIC_DASHBOARD_API_URL ?? '').replace(/\/+$/, '');
-}
-
-export default function LoginPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (!isLoading && isAuthenticated) router.replace('/dashboard');
-  }, [isAuthenticated, isLoading, router]);
-
-  const handleGoogle = async () => {
-    setBusy(true);
+  const handleDelete = async (id: string) => {
+    if (!confirm('¿Eliminar este producto?')) return;
     try {
-      // Importar Firebase solo cuando el usuario hace click (code split)
-      const { initializeApp, getApps, getApp } = await import('firebase/app');
-      const { getAuth, GoogleAuthProvider, signInWithPopup } = await import('firebase/auth');
-
-      const cfg = {
-        apiKey:            process.env.NEXT_PUBLIC_FIREBASE_API_KEY!,
-        authDomain:        process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN!,
-        projectId:         process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID!,
-        storageBucket:     process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET!,
-        messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID!,
-        appId:             process.env.NEXT_PUBLIC_FIREBASE_APP_ID!,
-      };
-
-      const fbApp  = getApps().length ? getApp() : initializeApp(cfg);
-      const auth   = getAuth(fbApp);
-      const result = await signInWithPopup(auth, new GoogleAuthProvider());
-      const idToken = await result.user.getIdToken();
-
-      // Llamar firebase-sso → el backend escribe las cookies HttpOnly
-      const res = await fetch(`${getBase()}/auth/firebase-sso`, {
-        method:      'POST',
-        credentials: 'include', // ← necesario para recibir las cookies
-        headers:     { 'Content-Type': 'application/json' },
-        body:        JSON.stringify({ firebaseIdToken: idToken }),
-      });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as { message?: string };
-        throw new Error(body.message ?? `Error ${res.status}`);
-      }
-
-      // Cookie seteada → redirigir (AuthContext leerá la cookie en /dashboard)
-      window.location.href = '/dashboard';
-
+      await deleteProduct.mutateAsync(id);
+      toast.success('Producto eliminado');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Error al iniciar sesión');
-      setBusy(false);
+      toast.error(err instanceof Error ? err.message : 'Error al eliminar');
     }
   };
 
-  if (isLoading) {
+  if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      <div className="flex items-center gap-2 text-destructive text-sm p-4">
+        <AlertCircle className="h-4 w-4" />
+        {error instanceof Error ? error.message : 'Error al cargar productos'}
       </div>
     );
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-background p-4">
-      <div className="w-full max-w-sm space-y-8">
-        <div className="text-center space-y-3">
-          <div className="flex justify-center">
-            <div className="flex size-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
-              <Building2 className="h-7 w-7" />
-            </div>
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Propiedad Dashboard</h1>
-            <p className="text-sm text-muted-foreground mt-1">Plataforma de gestión inmobiliaria</p>
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Input
+          placeholder="Buscar producto..."
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+          className="max-w-sm"
+        />
+        <Button size="sm" className="ml-auto gap-1.5">
+          <Plus className="h-4 w-4" />
+          Nuevo producto
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex justify-center py-12">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      ) : items.length === 0 ? (
+        <p className="text-sm text-muted-foreground py-12 text-center">
+          Sin productos todavía.
+        </p>
+      ) : (
+        <div className="rounded-lg border border-border overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Nombre</TableHead>
+                <TableHead>Variantes</TableHead>
+                <TableHead>Stock total</TableHead>
+                <TableHead>Estado</TableHead>
+                <TableHead className="text-right">Acciones</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {items.map((p) => (
+                <TableRow key={p.id}>
+                  <TableCell className="font-medium">{p.name}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {p.variants.length}
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {p.variants.reduce((acc, v) => acc + v.quantityAvailable, 0)}
+                  </TableCell>
+                  <TableCell>
+                    <span className={p.isActive ? 'text-emerald-600 text-xs' : 'text-muted-foreground text-xs'}>
+                      {p.isActive ? 'Activo' : 'Inactivo'}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-right space-x-1">
+                    <Button variant="ghost" size="icon" className="h-8 w-8">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-destructive"
+                      onClick={() => handleDelete(p.id)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+
+      {meta && meta.totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">
+            Página {meta.page} de {meta.totalPages} — {meta.total} productos
+          </p>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" disabled={!meta.hasPrevPage} onClick={() => setPage((p) => p - 1)}>
+              Anterior
+            </Button>
+            <Button variant="outline" size="sm" disabled={!meta.hasNextPage} onClick={() => setPage((p) => p + 1)}>
+              Siguiente
+            </Button>
           </div>
         </div>
-        <Button onClick={handleGoogle} disabled={busy} className="w-full h-11 gap-3" variant="outline">
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : (
-            <svg className="h-4 w-4" viewBox="0 0 24 24">
-              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-            </svg>
-          )}
-          {busy ? 'Iniciando sesión...' : 'Continuar con Google'}
-        </Button>
-        <p className="text-center text-xs text-muted-foreground">Solo para usuarios autorizados.</p>
-      </div>
-    </main>
+      )}
+    </div>
   );
 }
 EOF
-ok "app/login/page.tsx"
+ok "app/dashboard/tienda/productos/page.tsx creado"
 
+# =============================================================================
+# 6. app/dashboard/tienda/pedidos/page.tsx
+# =============================================================================
+log "Creando app/dashboard/tienda/pedidos/page.tsx..."
+cat > app/dashboard/tienda/pedidos/page.tsx << 'EOF'
+'use client';
+
+import { useState } from 'react';
+import { Loader2, AlertCircle } from 'lucide-react';
+import { useAuth } from '@/features/auth/hooks/use-auth';
+import { useOrders } from '@/features/store/hooks';
+import type { OrderStatus } from '@/features/store/types';
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '@/components/ui/table';
+
+const STATUS_LABELS: Record<OrderStatus, string> = {
+  PENDING:   'Pendiente',
+  PAID:      'Pagado',
+  FULFILLED: 'Entregado',
+  CANCELLED: 'Cancelado',
+  REFUNDED:  'Reembolsado',
+};
+
+const STATUS_COLORS: Record<OrderStatus, string> = {
+  PENDING:   'text-amber-600',
+  PAID:      'text-blue-600',
+  FULFILLED: 'text-emerald-600',
+  CANCELLED: 'text-muted-foreground',
+  REFUNDED:  'text-destructive',
+};
+
+function formatCurrency(minor: number, currency: string) {
+  return new Intl.NumberFormat('es-AR', { style: 'currency', currency }).format(minor / 100);
+}
+
+export default function PedidosPage() {
+  const { organizationId } = useAuth();
+  const [page, setPage] = useState(1);
+
+  const { data, isLoading, error } = useOrders(organizationId, { page, limit: 20 });
+  const items = data?.items ?? [];
+  const meta = data?.meta;
+
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 text-destructive text-sm p-4">
+        <AlertCircle className="h-4 w-4" />
+        {error instanceof Error ? error.message : 'Error al cargar pedidos'}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {isLoading ? (
+        <div className="flex justify-center py-12">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      ) : items.length === 0 ? (
+        <p className="text-sm text-muted-foreground py-12 text-center">
+          Sin pedidos todavía.
+        </p>
+      ) : (
+        <div className="rounded-lg border border-border overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Pedido</TableHead>
+                <TableHead>Cliente</TableHead>
+                <TableHead>Total</TableHead>
+                <TableHead>Estado</TableHead>
+                <TableHead>Fecha</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {items.map((o) => (
+                <TableRow key={o.id}>
+                  <TableCell className="font-mono text-xs">{o.id.slice(0, 8)}</TableCell>
+                  <TableCell className="text-sm">{o.customerEmail ?? '—'}</TableCell>
+                  <TableCell className="text-sm font-medium">
+                    {formatCurrency(o.totalMinor, o.currency)}
+                  </TableCell>
+                  <TableCell>
+                    <span className={`text-xs font-medium ${STATUS_COLORS[o.status]}`}>
+                      {STATUS_LABELS[o.status]}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {new Date(o.createdAt).toLocaleDateString('es-AR')}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+
+      {meta && meta.totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">
+            Página {meta.page} de {meta.totalPages} — {meta.total} pedidos
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+EOF
+ok "app/dashboard/tienda/pedidos/page.tsx creado"
+
+# =============================================================================
+# 7. app/dashboard/tienda/preview/page.tsx
+# =============================================================================
+log "Creando app/dashboard/tienda/preview/page.tsx..."
+cat > app/dashboard/tienda/preview/page.tsx << 'EOF'
+'use client';
+
+import { ExternalLink, AlertTriangle } from 'lucide-react';
+import { useAuth } from '@/features/auth/hooks/use-auth';
+import { Button } from '@/components/ui/button';
+
+export default function PreviewPage() {
+  const { activeOrg } = useAuth();
+  const storeFrontUrl = process.env.NEXT_PUBLIC_STORE_FRONT_URL;
+
+  if (!storeFrontUrl) {
+    return (
+      <div className="flex items-center gap-2 text-muted-foreground text-sm p-4">
+        <AlertTriangle className="h-4 w-4" />
+        NEXT_PUBLIC_STORE_FRONT_URL no está configurado.
+      </div>
+    );
+  }
+
+  const previewUrl = `${storeFrontUrl}${activeOrg?.slug ? `?org=${activeOrg.slug}` : ''}`;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" asChild className="gap-1.5">
+          <a href={previewUrl} target="_blank" rel="noopener noreferrer">
+            Abrir en nueva pestaña
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </Button>
+      </div>
+      <div className="rounded-lg border border-border overflow-hidden bg-background" style={{ height: '75vh' }}>
+        <iframe
+          src={previewUrl}
+          className="w-full h-full"
+          title="Vista previa de la tienda"
+        />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Si la vista previa no carga (algunos navegadores bloquean iframes cross-origin),
+        usá "Abrir en nueva pestaña".
+      </p>
+    </div>
+  );
+}
+EOF
+ok "app/dashboard/tienda/preview/page.tsx creado"
+
+# =============================================================================
+# 8. ICON_MAP: agregar 'Store' en dashboard-sidebar.tsx y mobile-header.tsx
+# =============================================================================
+log "Agregando 'Store' al ICON_MAP en dashboard-sidebar.tsx y mobile-header.tsx..."
+
+ICON_MAP_OLD="Building2, MapPin, MessageSquare, CreditCard, TrendingUp,
+  Palette, ToggleLeft, Webhook, BarChart2,"
+ICON_MAP_NEW="Building2, MapPin, MessageSquare, CreditCard, TrendingUp,
+  Palette, ToggleLeft, Webhook, BarChart2, Store,"
+
+for f in "components/layout/dashboard-sidebar.tsx" "components/layout/mobile-header.tsx"; do
+  if [ -f "$f" ]; then
+    if grep -qzF "$ICON_MAP_OLD" "$f" 2>/dev/null || perl -0777 -ne 'exit(index($_, $ARGV[0])==-1)' "$f" "$ICON_MAP_OLD" 2>/dev/null; then
+      node -e "
+        const fs = require('fs');
+        const path = '$f';
+        let src = fs.readFileSync(path, 'utf8');
+        const old = \`$ICON_MAP_OLD\`;
+        const neu = \`$ICON_MAP_NEW\`;
+        if (src.includes(old) && !src.includes('Store,')) {
+          src = src.replace(old, neu);
+          fs.writeFileSync(path, src);
+          console.log('  patched: $f');
+        } else if (src.includes('Store,')) {
+          console.log('  ya tenía Store: $f');
+        } else {
+          console.log('  NO_MATCH: $f');
+        }
+      "
+    else
+      warn "$f no tiene el patrón exacto de ICON_MAP esperado — agregá 'Store' manualmente al import de lucide-react y al ICON_MAP."
+    fi
+  else
+    warn "$f no encontrado, saltando."
+  fi
+done
+
+# =============================================================================
+# 9. .env.local.example — nuevas vars
+# =============================================================================
+if [ -f ".env.local.example" ]; then
+  if ! grep -q "NEXT_PUBLIC_ECOMMERCE_API_URL" .env.local.example; then
+    log "Agregando vars de Tienda a .env.local.example..."
+    cat >> .env.local.example << 'EOF'
+
+# ─── Tienda (real-ecommerce-back + real-ecommerce-front) ──────────────────────
+NEXT_PUBLIC_ECOMMERCE_API_URL=http://localhost:3010/api/v1
+NEXT_PUBLIC_STORE_FRONT_URL=http://localhost:3011
+EOF
+    ok ".env.local.example actualizado"
+  else
+    ok ".env.local.example ya tenía las vars de Tienda"
+  fi
+else
+  warn ".env.local.example no encontrado — agregá manualmente NEXT_PUBLIC_ECOMMERCE_API_URL y NEXT_PUBLIC_STORE_FRONT_URL"
+fi
+
+# =============================================================================
+# RESUMEN + instrucción manual para config/navigation.ts
+# =============================================================================
 echo ""
-echo -e "${GREEN}══════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  Script completado — 3 archivos modificados${NC}"
-echo -e "${GREEN}══════════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}  ✅ Módulo Tienda scaffoldeado${NC}"
+echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
 echo ""
-echo "  También ejecutar en real-dashboard-back: fix-cookies-dashboard-back.sh"
+echo -e "${YELLOW}⚠️  PASO MANUAL REQUERIDO — config/navigation.ts:${NC}"
+echo "   No edité este archivo porque no conozco su forma exacta."
+echo "   Agregá una entrada así (ajustando al shape real del array NAV_GROUPS):"
 echo ""
-echo "  Variable requerida en Railway del dashboard-back:"
-echo "    ALLOWED_ORIGINS=https://realsass-dashboard-front-production.up.railway.app,https://realsass-sass-front-production.up.railway.app"
+echo '   { name: '"'"'Tienda'"'"', href: '"'"'/dashboard/tienda'"'"', icon: '"'"'Store'"'"', active: true }'
 echo ""
-echo "  Flujo final:"
-echo "    real-front → POST /firebase-sso → cookie seteada → redirect /auth/sso"
-echo "    /auth/sso  → redirect /dashboard"  
-echo "    AuthContext → GET /auth/me (cookie va automática) → 200 → dashboard ✓"
+echo "   Y agregá 'Store' al import de lucide-react en ese mismo archivo si"
+echo "   NAV_GROUPS referencia los íconos directamente ahí en vez de por string."
 echo ""
+echo -e "${YELLOW}⚠️  Confirmá el contrato REST:${NC}"
+echo "   features/store/api.ts asume rutas /products, /orders, /inventory."
+echo "   Si tus controllers reales en real-ecommerce-back difieren, pegámelos"
+echo "   y ajusto ese único archivo."
+echo ""
+echo -e "${YELLOW}Próximos pasos:${NC}"
+echo "   1. cp .env.local.example .env.local  (si no lo tenías)"
+echo "   2. Completar NEXT_PUBLIC_ECOMMERCE_API_URL y NEXT_PUBLIC_STORE_FRONT_URL"
+echo "   3. Agregar la entrada de navegación (ver arriba)"
+echo "   4. pnpm dev"
