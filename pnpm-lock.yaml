@@ -4,355 +4,196 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-catalogs:
-  frontend:
-    '@hookform/resolvers':
-      specifier: ^3.10.0
-      version: 3.10.0
-    '@radix-ui/react-accordion':
-      specifier: 1.2.12
-      version: 1.2.12
-    '@radix-ui/react-alert-dialog':
-      specifier: 1.1.15
-      version: 1.1.15
-    '@radix-ui/react-aspect-ratio':
-      specifier: 1.1.8
-      version: 1.1.8
-    '@radix-ui/react-avatar':
-      specifier: 1.1.11
-      version: 1.1.11
-    '@radix-ui/react-checkbox':
-      specifier: 1.3.3
-      version: 1.3.3
-    '@radix-ui/react-collapsible':
-      specifier: 1.1.12
-      version: 1.1.12
-    '@radix-ui/react-context-menu':
-      specifier: 2.2.16
-      version: 2.2.16
-    '@radix-ui/react-dialog':
-      specifier: 1.1.15
-      version: 1.1.15
-    '@radix-ui/react-dropdown-menu':
-      specifier: 2.1.16
-      version: 2.1.16
-    '@radix-ui/react-hover-card':
-      specifier: 1.1.15
-      version: 1.1.15
-    '@radix-ui/react-label':
-      specifier: 2.1.8
-      version: 2.1.8
-    '@radix-ui/react-menubar':
-      specifier: 1.1.16
-      version: 1.1.16
-    '@radix-ui/react-navigation-menu':
-      specifier: 1.2.14
-      version: 1.2.14
-    '@radix-ui/react-popover':
-      specifier: 1.1.15
-      version: 1.1.15
-    '@radix-ui/react-progress':
-      specifier: 1.1.8
-      version: 1.1.8
-    '@radix-ui/react-radio-group':
-      specifier: 1.3.8
-      version: 1.3.8
-    '@radix-ui/react-scroll-area':
-      specifier: 1.2.10
-      version: 1.2.10
-    '@radix-ui/react-select':
-      specifier: 2.2.6
-      version: 2.2.6
-    '@radix-ui/react-separator':
-      specifier: 1.1.8
-      version: 1.1.8
-    '@radix-ui/react-slider':
-      specifier: 1.3.6
-      version: 1.3.6
-    '@radix-ui/react-slot':
-      specifier: 1.2.4
-      version: 1.2.4
-    '@radix-ui/react-switch':
-      specifier: 1.2.6
-      version: 1.2.6
-    '@radix-ui/react-tabs':
-      specifier: 1.1.13
-      version: 1.1.13
-    '@radix-ui/react-toast':
-      specifier: 1.2.15
-      version: 1.2.15
-    '@radix-ui/react-toggle':
-      specifier: 1.1.10
-      version: 1.1.10
-    '@radix-ui/react-toggle-group':
-      specifier: 1.1.11
-      version: 1.1.11
-    '@radix-ui/react-tooltip':
-      specifier: 1.2.8
-      version: 1.2.8
-    '@tanstack/react-query':
-      specifier: ^5.80.7
-      version: 5.90.21
-    '@trpc/client':
-      specifier: ^11.0.0
-      version: 11.18.0
-    '@trpc/react-query':
-      specifier: ^11.0.0
-      version: 11.18.0
-    '@trpc/server':
-      specifier: ^11.0.0
-      version: 11.18.0
-    '@types/node':
-      specifier: ^22
-      version: 22.19.11
-    '@types/react':
-      specifier: 19.2.14
-      version: 19.2.14
-    '@types/react-dom':
-      specifier: 19.2.3
-      version: 19.2.3
-    class-variance-authority:
-      specifier: ^0.7.1
-      version: 0.7.1
-    clsx:
-      specifier: ^2.1.1
-      version: 2.1.1
-    date-fns:
-      specifier: 4.1.0
-      version: 4.1.0
-    firebase:
-      specifier: ^12.14.0
-      version: 12.14.0
-    lucide-react:
-      specifier: ^0.564.0
-      version: 0.564.0
-    next:
-      specifier: 16.1.6
-      version: 16.1.6
-    next-themes:
-      specifier: ^0.4.6
-      version: 0.4.6
-    react:
-      specifier: 19.2.4
-      version: 19.2.4
-    react-day-picker:
-      specifier: 9.13.2
-      version: 9.13.2
-    react-dom:
-      specifier: 19.2.4
-      version: 19.2.4
-    react-hook-form:
-      specifier: ^7.54.1
-      version: 7.71.1
-    recharts:
-      specifier: 2.15.0
-      version: 2.15.0
-    sonner:
-      specifier: ^1.7.1
-      version: 1.7.4
-    tailwind-merge:
-      specifier: ^3.3.1
-      version: 3.4.0
-    tailwindcss:
-      specifier: ^4.2.0
-      version: 4.2.0
-    tw-animate-css:
-      specifier: 1.3.3
-      version: 1.3.3
-    typescript:
-      specifier: 5.7.3
-      version: 5.7.3
-    zod:
-      specifier: 3.25.76
-      version: 3.25.76
-
 importers:
 
   .:
     dependencies:
       '@hookform/resolvers':
-        specifier: catalog:frontend
+        specifier: ^3.10.0
         version: 3.10.0(react-hook-form@7.71.1(react@19.2.4))
       '@radix-ui/react-accordion':
-        specifier: catalog:frontend
+        specifier: 1.2.12
         version: 1.2.12(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-alert-dialog':
-        specifier: catalog:frontend
+        specifier: 1.1.15
         version: 1.1.15(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-aspect-ratio':
-        specifier: catalog:frontend
+        specifier: 1.1.8
         version: 1.1.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-avatar':
-        specifier: catalog:frontend
+        specifier: 1.1.11
         version: 1.1.11(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-checkbox':
-        specifier: catalog:frontend
+        specifier: 1.3.3
         version: 1.3.3(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-collapsible':
-        specifier: catalog:frontend
+        specifier: 1.1.12
         version: 1.1.12(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-context-menu':
-        specifier: catalog:frontend
+        specifier: 2.2.16
         version: 2.2.16(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-dialog':
-        specifier: catalog:frontend
+        specifier: 1.1.15
         version: 1.1.15(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-dropdown-menu':
-        specifier: catalog:frontend
+        specifier: 2.1.16
         version: 2.1.16(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-hover-card':
-        specifier: catalog:frontend
+        specifier: 1.1.15
         version: 1.1.15(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-label':
-        specifier: catalog:frontend
+        specifier: 2.1.8
         version: 2.1.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-menubar':
-        specifier: catalog:frontend
+        specifier: 1.1.16
         version: 1.1.16(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-navigation-menu':
-        specifier: catalog:frontend
+        specifier: 1.2.14
         version: 1.2.14(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-popover':
-        specifier: catalog:frontend
+        specifier: 1.1.15
         version: 1.1.15(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-progress':
-        specifier: catalog:frontend
+        specifier: 1.1.8
         version: 1.1.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-radio-group':
-        specifier: catalog:frontend
+        specifier: 1.3.8
         version: 1.3.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-scroll-area':
-        specifier: catalog:frontend
+        specifier: 1.2.10
         version: 1.2.10(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-select':
-        specifier: catalog:frontend
+        specifier: 2.2.6
         version: 2.2.6(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-separator':
-        specifier: catalog:frontend
+        specifier: 1.1.8
         version: 1.1.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-slider':
-        specifier: catalog:frontend
+        specifier: 1.3.6
         version: 1.3.6(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-slot':
-        specifier: catalog:frontend
+        specifier: 1.2.4
         version: 1.2.4(@types/react@19.2.14)(react@19.2.4)
       '@radix-ui/react-switch':
-        specifier: catalog:frontend
+        specifier: 1.2.6
         version: 1.2.6(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-tabs':
-        specifier: catalog:frontend
+        specifier: 1.1.13
         version: 1.1.13(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-toast':
-        specifier: catalog:frontend
+        specifier: 1.2.15
         version: 1.2.15(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-toggle':
-        specifier: catalog:frontend
+        specifier: 1.1.10
         version: 1.1.10(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-toggle-group':
-        specifier: catalog:frontend
+        specifier: 1.1.11
         version: 1.1.11(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-tooltip':
-        specifier: catalog:frontend
+        specifier: 1.2.8
         version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@tanstack/react-query':
-        specifier: catalog:frontend
+        specifier: ^5.80.7
         version: 5.90.21(react@19.2.4)
       '@trpc/client':
-        specifier: catalog:frontend
+        specifier: ^11.0.0
         version: 11.18.0(@trpc/server@11.18.0(typescript@5.7.3))(typescript@5.7.3)
       '@trpc/react-query':
-        specifier: catalog:frontend
+        specifier: ^11.0.0
         version: 11.18.0(@tanstack/react-query@5.90.21(react@19.2.4))(@trpc/client@11.18.0(@trpc/server@11.18.0(typescript@5.7.3))(typescript@5.7.3))(@trpc/server@11.18.0(typescript@5.7.3))(react@19.2.4)(typescript@5.7.3)
       '@trpc/server':
-        specifier: catalog:frontend
+        specifier: ^11.0.0
         version: 11.18.0(typescript@5.7.3)
       '@vercel/analytics':
         specifier: 1.6.1
         version: 1.6.1(next@16.1.6(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)
       class-variance-authority:
-        specifier: catalog:frontend
+        specifier: ^0.7.1
         version: 0.7.1
       clsx:
-        specifier: catalog:frontend
+        specifier: ^2.1.1
         version: 2.1.1
       cmdk:
         specifier: 1.1.1
         version: 1.1.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       date-fns:
-        specifier: catalog:frontend
+        specifier: 4.1.0
         version: 4.1.0
       embla-carousel-react:
         specifier: 8.6.0
         version: 8.6.0(react@19.2.4)
       firebase:
-        specifier: catalog:frontend
+        specifier: ^12.14.0
         version: 12.14.0
       input-otp:
         specifier: 1.4.2
         version: 1.4.2(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       lucide-react:
-        specifier: catalog:frontend
+        specifier: ^0.564.0
         version: 0.564.0(react@19.2.4)
       next:
-        specifier: catalog:frontend
+        specifier: 16.1.6
         version: 16.1.6(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       next-themes:
-        specifier: catalog:frontend
+        specifier: ^0.4.6
         version: 0.4.6(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       react:
-        specifier: catalog:frontend
+        specifier: 19.2.4
         version: 19.2.4
       react-day-picker:
-        specifier: catalog:frontend
+        specifier: 9.13.2
         version: 9.13.2(react@19.2.4)
       react-dom:
-        specifier: catalog:frontend
+        specifier: 19.2.4
         version: 19.2.4(react@19.2.4)
       react-hook-form:
-        specifier: catalog:frontend
+        specifier: ^7.54.1
         version: 7.71.1(react@19.2.4)
       react-resizable-panels:
         specifier: ^2.1.7
         version: 2.1.9(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       recharts:
-        specifier: catalog:frontend
+        specifier: 2.15.0
         version: 2.15.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       sonner:
-        specifier: catalog:frontend
+        specifier: ^1.7.1
         version: 1.7.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       tailwind-merge:
-        specifier: catalog:frontend
+        specifier: ^3.3.1
         version: 3.4.0
       vaul:
         specifier: ^1.1.2
         version: 1.1.2(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       zod:
-        specifier: catalog:frontend
+        specifier: 3.25.76
         version: 3.25.76
+      zustand:
+        specifier: ^5.0.0
+        version: 5.0.14(@types/react@19.2.14)(react@19.2.4)(use-sync-external-store@1.6.0(react@19.2.4))
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4.2.0
         version: 4.2.0
       '@types/node':
-        specifier: catalog:frontend
+        specifier: ^22
         version: 22.19.11
       '@types/react':
-        specifier: catalog:frontend
+        specifier: 19.2.14
         version: 19.2.14
       '@types/react-dom':
-        specifier: catalog:frontend
+        specifier: 19.2.3
         version: 19.2.3(@types/react@19.2.14)
       postcss:
         specifier: ^8.5
         version: 8.5.6
       tailwindcss:
-        specifier: catalog:frontend
+        specifier: ^4.2.0
         version: 4.2.0
       tw-animate-css:
-        specifier: catalog:frontend
+        specifier: 1.3.3
         version: 1.3.3
       typescript:
-        specifier: catalog:frontend
+        specifier: 5.7.3
         version: 5.7.3
 
 packages:
@@ -2243,6 +2084,24 @@ packages:
 
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
+  zustand@5.0.14:
+    resolution: {integrity: sha512-/8tAspM5LMPr28b3fwLYrtdj77ECpfZviaP75CMTnwO8ISyaE4GDIG/9rDDYq/cH9D2Xw2A2RXglLInmVBQB/g==}
+    engines: {node: '>=12.20.0'}
+    peerDependencies:
+      '@types/react': '>=18.0.0'
+      immer: '>=9.0.6'
+      react: '>=18.0.0'
+      use-sync-external-store: '>=1.2.0'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      immer:
+        optional: true
+      react:
+        optional: true
+      use-sync-external-store:
+        optional: true
 
 snapshots:
 
@@ -4171,3 +4030,9 @@ snapshots:
       yargs-parser: 21.1.1
 
   zod@3.25.76: {}
+
+  zustand@5.0.14(@types/react@19.2.14)(react@19.2.4)(use-sync-external-store@1.6.0(react@19.2.4)):
+    optionalDependencies:
+      '@types/react': 19.2.14
+      react: 19.2.4
+      use-sync-external-store: 1.6.0(react@19.2.4)
