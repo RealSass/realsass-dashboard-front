@@ -1,5 +1,5 @@
 export const siteConfig = {
-  name:        'Propiedad Dashboard',
-  description: 'Plataforma de gestión inmobiliaria SaaS',
+  name:        'Dashboard',
+  description: 'Panel de gestión SaaS',
   locale:      'es-AR',
 } as const;

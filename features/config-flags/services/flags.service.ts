@@ -1,8 +1,14 @@
-import { apiClient } from '@/lib/api-client';
-import type { FeatureFlag, UpdateFlagInput } from '@/features/config/types';
+import { realBackFetch } from '@/lib/api-client';
+import type { FeatureFlag } from '@/features/config/types';
+
+const BASE = '/api/v1/config/flags';
 
 export const getFlags = (orgId: string): Promise<FeatureFlag[]> =>
-  apiClient.get('config', '/config/flags', orgId);
+  realBackFetch.get(BASE, orgId);
 
-export const updateFlag = (key: string, data: UpdateFlagInput, orgId: string): Promise<FeatureFlag> =>
-  apiClient.patch('config', `/config/flags/${encodeURIComponent(key)}`, data, orgId);
+export const updateFlag = (
+  id: string,
+  data: { enabled?: boolean; rolloutPercentage?: number; conditions?: Record<string, unknown> },
+  orgId: string,
+): Promise<FeatureFlag> =>
+  realBackFetch.patch(`${BASE}/${id}`, data, orgId);

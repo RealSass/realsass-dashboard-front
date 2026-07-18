@@ -1,3 +1,4 @@
+import { TrpcProvider } from '@/lib/trpc/provider';
 import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
@@ -43,7 +44,7 @@ export default function RootLayout({
       <body className={`${inter.variable} font-sans antialiased`}>
         <QueryProvider>
           <AuthProvider>
-            {children}
+            <TrpcProvider>{children}</TrpcProvider>
             <Toaster
               theme="dark"
               position="top-right"

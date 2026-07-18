@@ -1,9 +1,10 @@
 export const NAV_GROUPS = [
   {
-    label: 'Inmobiliaria',
+    label: 'Tienda',
     items: [
-      { name: 'Propiedades', href: '/dashboard',       icon: 'Building2',     active: true  },
-      { name: 'Zonas',       href: '/dashboard/zonas', icon: 'MapPin',        active: true  },
+      { name: 'Productos',   href: '/dashboard/tienda/productos', icon: 'Package',    active: true  },
+      { name: 'Pedidos',     href: '/dashboard/tienda/pedidos',   icon: 'ShoppingBag', active: true  },
+      { name: 'Preview',     href: '/dashboard/tienda/preview',   icon: 'ExternalLink', active: true },
     ],
   },
   {
@@ -17,10 +18,10 @@ export const NAV_GROUPS = [
   {
     label: 'Configuración',
     items: [
-      { name: 'Tema visual',    href: '/dashboard/configuracion/tema',     icon: 'Palette',    active: true },
-      { name: 'Feature Flags',  href: '/dashboard/configuracion/flags',    icon: 'ToggleLeft', active: true },
-      { name: 'Webhooks',       href: '/dashboard/configuracion/webhooks', icon: 'Webhook',    active: true },
-      { name: 'Quotas',         href: '/dashboard/configuracion/quotas',   icon: 'BarChart2',  active: true },
+      { name: 'Tema visual',   href: '/dashboard/configuracion/tema',     icon: 'Palette',    active: true },
+      { name: 'Feature Flags', href: '/dashboard/configuracion/flags',    icon: 'ToggleLeft', active: true },
+      { name: 'Webhooks',      href: '/dashboard/configuracion/webhooks', icon: 'Webhook',    active: true },
+      { name: 'Quotas',        href: '/dashboard/configuracion/quotas',   icon: 'BarChart2',  active: true },
     ],
   },
 ] as const;

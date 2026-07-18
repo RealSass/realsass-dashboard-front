@@ -1,125 +1,110 @@
 // lib/api-client.ts
-// ─── Cliente HTTP multi-sistema — Firebase Auth + x-api-key para config ───────
-import { getIdToken } from '@/lib/firebase';
-import { API_URLS, type ApiSystem } from '@/config/constants';
-import type { ApiError } from '@/types/api';
+// Dos helpers HTTP — uno por backend.
+// Ambos obtienen el token Firebase fresco en cada llamada.
 
-export type { ApiSystem };
+import { getCurrentUserToken } from './firebase';
 
-export function buildQuery(filters: Record<string, unknown>): string {
-  const params = new URLSearchParams();
-  Object.entries(filters).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== '') {
-      params.append(key, String(value));
-    }
+// ─── Helpers internos ─────────────────────────────────────────────────────────
+
+function getRealBackBase(): string {
+  const url = process.env.NEXT_PUBLIC_REAL_BACK_URL ?? '';
+  if (!url) throw new Error('NEXT_PUBLIC_REAL_BACK_URL no configurado');
+  return url.replace(/\/+$/, '');
+}
+
+function getEcommerceBase(): string {
+  const url = process.env.NEXT_PUBLIC_ECOMMERCE_API_URL ?? '';
+  if (!url) throw new Error('NEXT_PUBLIC_ECOMMERCE_API_URL no configurado');
+  return url.replace(/\/+$/, '');
+}
+
+export function buildQuery(params: Record<string, unknown>): string {
+  const q = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') q.append(k, String(v));
   });
-  return params.toString() ? `?${params.toString()}` : '';
+  const s = q.toString();
+  return s ? `?${s}` : '';
 }
 
-function unwrap<T>(json: unknown): T {
-  if (json && typeof json === 'object' && 'data' in (json as object)) {
-    return (json as { data: T }).data;
+async function getToken(): Promise<string | undefined> {
+  if (typeof window === 'undefined') return undefined;
+  try {
+    return await getCurrentUserToken();
+  } catch {
+    return undefined;
   }
-  return json as T;
 }
 
-/**
- * Fetch principal. El sistema 'config' usa x-api-key en lugar de Bearer.
- * Todos los demás sistemas usan Authorization: Bearer <firebase-token>.
- */
+interface FetchOptions {
+  method?:  string;
+  body?:    unknown;
+  orgId?:   string;
+  signal?:  AbortSignal;
+}
+
 async function coreFetch<T>(
-  system: ApiSystem,
-  endpoint: string,
-  options: RequestInit & { organizationId?: string } = {},
-  _retry = true,
+  baseUrl: string,
+  path: string,
+  { method = 'GET', body, orgId, signal }: FetchOptions = {},
 ): Promise<T> {
-  const baseUrl = API_URLS[system];
-  if (!baseUrl) throw new Error(`Sistema "${system}" no configurado en variables de entorno`);
-
-  const { organizationId, ...fetchOptions } = options;
-
-  // ── Construir headers según sistema ──────────────────────────────────────────
-  let authHeaders: Record<string, string> = {};
-
-  if (system === 'config') {
-    // Config service usa x-api-key (ApiKeyGuard)
-    const apiKey = process.env.NEXT_PUBLIC_CONFIG_API_KEY;
-    if (!apiKey) throw new Error('NEXT_PUBLIC_CONFIG_API_KEY no configurado');
-    authHeaders = { 'x-api-key': apiKey };
-  } else {
-    // Resto de sistemas usan Firebase Bearer token
-    try {
-      const token = await getIdToken();
-      authHeaders = { Authorization: `Bearer ${token}` };
-    } catch {
-      if (typeof window !== 'undefined') window.location.href = '/login';
-      throw new Error('No autenticado');
-    }
-  }
+  const token = await getToken();
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...authHeaders,
-    ...(organizationId ? { 'x-organization-id': organizationId } : {}),
-    ...(fetchOptions.headers as Record<string, string> | undefined),
+    ...(token  ? { Authorization: `Bearer ${token}` } : {}),
+    ...(orgId  ? { 'x-organization-id': orgId }      : {}),
   };
 
-  let response = await fetch(`${baseUrl}${endpoint}`, {
-    ...fetchOptions,
+  const res = await fetch(`${baseUrl}${path}`, {
+    method,
     headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
   });
 
-  // ── Retry en 401 solo para sistemas con Firebase ──────────────────────────
-  if (response.status === 401 && _retry && system !== 'config') {
-    try {
-      const freshToken = await getIdToken(true);
-      headers.Authorization = `Bearer ${freshToken}`;
-      response = await fetch(`${baseUrl}${endpoint}`, { ...fetchOptions, headers });
-    } catch {
-      if (typeof window !== 'undefined') window.location.href = '/login';
-      throw new Error('Sesión expirada');
-    }
+  const json = await res.json().catch(() => ({})) as Record<string, unknown>;
+
+  if (!res.ok) {
+    const msg =
+      (json['message'] as string | undefined) ??
+      (json['error']   as string | undefined) ??
+      `Error ${res.status}`;
+    throw new Error(msg);
   }
 
-  let json: unknown;
-  try {
-    json = await response.json();
-  } catch {
-    if (!response.ok) throw new Error(`Error ${response.status}`);
-    return undefined as T;
-  }
-
-  if (!response.ok) {
-    const apiError = json as Partial<ApiError> & { error?: string; message?: string | string[] };
-    const rawMsg   = apiError.message ?? apiError.error ?? `Error ${response.status}`;
-    const msg      = Array.isArray(rawMsg) ? rawMsg[0] : rawMsg;
-    const err      = new Error(msg) as Error & { statusCode?: number };
-    err.statusCode = response.status;
-    throw err;
-  }
-
-  return unwrap<T>(json);
+  // real-back y ecommerce-back envuelven en { success, data }
+  return ((json['data'] as T | undefined) ?? json as unknown as T);
 }
 
-export const apiClient = {
-  get<T>(system: ApiSystem, endpoint: string, organizationId?: string): Promise<T> {
-    return coreFetch<T>(system, endpoint, { method: 'GET', organizationId });
-  },
-  post<T>(system: ApiSystem, endpoint: string, body?: unknown, organizationId?: string): Promise<T> {
-    return coreFetch<T>(system, endpoint, {
-      method: 'POST',
-      body:   body !== undefined ? JSON.stringify(body) : undefined,
-      organizationId,
-    });
-  },
-  patch<T>(system: ApiSystem, endpoint: string, body?: unknown, organizationId?: string): Promise<T> {
-    return coreFetch<T>(system, endpoint, {
-      method: 'PATCH',
-      body:   body !== undefined ? JSON.stringify(body) : undefined,
-      organizationId,
-    });
-  },
-  delete<T>(system: ApiSystem, endpoint: string, organizationId?: string): Promise<T> {
-    return coreFetch<T>(system, endpoint, { method: 'DELETE', organizationId });
-  },
+// ─── real-back (auth + config) ────────────────────────────────────────────────
+
+export const realBackFetch = {
+  get: <T>(path: string, orgId?: string) =>
+    coreFetch<T>(getRealBackBase(), path, { orgId }),
+
+  post: <T>(path: string, body: unknown, orgId?: string) =>
+    coreFetch<T>(getRealBackBase(), path, { method: 'POST', body, orgId }),
+
+  patch: <T>(path: string, body: unknown, orgId?: string) =>
+    coreFetch<T>(getRealBackBase(), path, { method: 'PATCH', body, orgId }),
+
+  delete: <T>(path: string, orgId?: string) =>
+    coreFetch<T>(getRealBackBase(), path, { method: 'DELETE', orgId }),
+};
+
+// ─── real-ecommerce-back (catálogo + pedidos) ─────────────────────────────────
+
+export const ecommerceFetch = {
+  get: <T>(path: string, orgId: string) =>
+    coreFetch<T>(getEcommerceBase(), path, { orgId }),
+
+  post: <T>(path: string, body: unknown, orgId: string) =>
+    coreFetch<T>(getEcommerceBase(), path, { method: 'POST', body, orgId }),
+
+  patch: <T>(path: string, body: unknown, orgId: string) =>
+    coreFetch<T>(getEcommerceBase(), path, { method: 'PATCH', body, orgId }),
+
+  delete: <T>(path: string, orgId: string) =>
+    coreFetch<T>(getEcommerceBase(), path, { method: 'DELETE', orgId }),
 };

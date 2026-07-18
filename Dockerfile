@@ -3,22 +3,13 @@
 # =============================================================================
 
 FROM node:22-alpine AS deps
-
-RUN corepack enable \
- && corepack prepare pnpm@10.11.1 --activate
-
+RUN corepack enable && corepack prepare pnpm@10.11.1 --activate
 WORKDIR /app
-
 COPY package.json .npmrc* ./
-
 RUN pnpm install --no-frozen-lockfile
 
-# ── Build ─────────────────────────────────────────────────────────────────────
 FROM node:22-alpine AS builder
-
-RUN corepack enable \
- && corepack prepare pnpm@10.11.1 --activate
-
+RUN corepack enable && corepack prepare pnpm@10.11.1 --activate
 WORKDIR /app
 
 # Firebase
@@ -36,45 +27,30 @@ ENV NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=$NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
 ENV NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=$NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
 ENV NEXT_PUBLIC_FIREBASE_APP_ID=$NEXT_PUBLIC_FIREBASE_APP_ID
 
-# APIs del ecosistema
-ARG NEXT_PUBLIC_API_URL
-ARG NEXT_PUBLIC_DASHBOARD_API_URL
+# Backends
 ARG NEXT_PUBLIC_REAL_BACK_URL
-ARG NEXT_PUBLIC_CONFIG_URL
-ARG NEXT_PUBLIC_CONFIG_API_KEY
+ARG NEXT_PUBLIC_ECOMMERCE_API_URL
+ARG NEXT_PUBLIC_STORE_FRONT_URL
 
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_DASHBOARD_API_URL=$NEXT_PUBLIC_DASHBOARD_API_URL
 ENV NEXT_PUBLIC_REAL_BACK_URL=$NEXT_PUBLIC_REAL_BACK_URL
-ENV NEXT_PUBLIC_CONFIG_URL=$NEXT_PUBLIC_CONFIG_URL
-ENV NEXT_PUBLIC_CONFIG_API_KEY=$NEXT_PUBLIC_CONFIG_API_KEY
-
+ENV NEXT_PUBLIC_ECOMMERCE_API_URL=$NEXT_PUBLIC_ECOMMERCE_API_URL
+ENV NEXT_PUBLIC_STORE_FRONT_URL=$NEXT_PUBLIC_STORE_FRONT_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-
 RUN pnpm build
 
-# ── Runner ────────────────────────────────────────────────────────────────────
 FROM node:22-alpine AS runner
-
 WORKDIR /app
-
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
-
-RUN addgroup --system --gid 1001 nodejs \
- && adduser  --system --uid 1001 nextjs
-
+RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 COPY --from=builder /app/public                               ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static   ./.next/static
-
 USER nextjs
-
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
-
 CMD ["node", "server.js"]

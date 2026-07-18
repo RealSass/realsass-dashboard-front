@@ -1,10 +1,10 @@
-// lib/firebase.ts
-import { initializeApp, getApps, getApp } from 'firebase/app';
+// lib/firebase.ts — inicialización Firebase client SDK
+import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
 import {
   getAuth,
-  GoogleAuthProvider,
   signInWithPopup,
-  signOut as firebaseSignOut,
+  GoogleAuthProvider,
+  signOut,
   onAuthStateChanged,
   type User,
 } from 'firebase/auth';
@@ -18,28 +18,24 @@ const firebaseConfig = {
   appId:             process.env.NEXT_PUBLIC_FIREBASE_APP_ID!,
 };
 
-// Singleton — evita reinicializar en HMR
-const app  = getApps().length ? getApp() : initializeApp(firebaseConfig);
-const auth = getAuth(app);
-
-const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({ prompt: 'select_account' });
-
-export async function signInWithGoogle() {
-  return signInWithPopup(auth, googleProvider);
+let app: FirebaseApp;
+if (!getApps().length) {
+  app = initializeApp(firebaseConfig);
+} else {
+  app = getApps()[0]!;
 }
 
-export async function signOut() {
-  return firebaseSignOut(auth);
-}
+export const auth = getAuth(app);
+export const googleProvider = new GoogleAuthProvider();
 
 /**
- * Obtiene el Firebase ID Token del usuario actual.
- * forceRefresh=true para renovar tokens expirados.
+ * Retorna el token JWT del usuario actual, refrescándolo si está por expirar.
+ * Lanza si no hay usuario autenticado.
  */
-export function getIdToken(forceRefresh = false): Promise<string> {
-  if (!auth.currentUser) throw new Error('No hay usuario autenticado');
-  return auth.currentUser.getIdToken(forceRefresh);
+export async function getCurrentUserToken(): Promise<string> {
+  const user = auth.currentUser;
+  if (!user) throw new Error('No hay usuario autenticado');
+  return user.getIdToken();
 }
 
-export { auth, onAuthStateChanged, type User };
+export { signInWithPopup, signOut, onAuthStateChanged, type User };

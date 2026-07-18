@@ -1,16 +1,16 @@
-import { apiClient } from '@/lib/api-client';
+import { realBackFetch } from '@/lib/api-client';
 import type { ThemeConfig, CreateThemeInput } from '@/features/config/types';
 
-const BASE = '/config/themes';
+const BASE = '/api/v1/config/themes';
 
 export const getThemes = (orgId: string): Promise<ThemeConfig[]> =>
-  apiClient.get('config', BASE, orgId);
+  realBackFetch.get(BASE, orgId);
 
 export const createTheme = (data: CreateThemeInput, orgId: string): Promise<ThemeConfig> =>
-  apiClient.post('config', BASE, data, orgId);
+  realBackFetch.post(BASE, data, orgId);
 
 export const activateTheme = (id: string, orgId: string): Promise<{ success: boolean; message: string }> =>
-  apiClient.patch('config', `${BASE}/${id}/activate`, {}, orgId);
+  realBackFetch.patch(`${BASE}/${id}/activate`, {}, orgId);
 
 export const deleteTheme = (id: string, orgId: string): Promise<{ success: boolean; message: string }> =>
-  apiClient.delete('config', `${BASE}/${id}`, orgId);
+  realBackFetch.delete(`${BASE}/${id}`, orgId);
