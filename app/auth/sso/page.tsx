@@ -4,8 +4,8 @@
 import { useEffect, useState } from 'react'
 import { useRouter }           from 'next/navigation'
 import { Loader2, AlertCircle } from 'lucide-react'
-import { signInWithCustomToken, getAuth } from 'firebase/auth'
-import { app } from '@/lib/firebase'
+import { signInWithCustomToken } from 'firebase/auth'
+import { auth } from '@/lib/firebase'
 
 type State = 'loading' | 'error'
 
@@ -17,7 +17,6 @@ export default function SsoPage() {
   useEffect(() => {
     const run = async () => {
       try {
-        // 1. Leer el customToken de la URL
         const params      = new URLSearchParams(window.location.search)
         const customToken = params.get('token')
 
@@ -27,12 +26,9 @@ export default function SsoPage() {
           return
         }
 
-        // 2. Hacer signInWithCustomToken — Firebase lo verifica y crea la sesión
         setMessage('Verificando credenciales...')
-        const auth = getAuth(app)
         await signInWithCustomToken(auth, customToken)
 
-        // 3. Sesión creada — redirigir al dashboard
         setMessage('Sesión iniciada. Redirigiendo...')
         router.replace('/dashboard')
 
@@ -59,10 +55,7 @@ export default function SsoPage() {
         <>
           <AlertCircle className="h-10 w-10 text-destructive" />
           <p className="text-sm text-destructive text-center max-w-xs">{message}</p>
-          
-            href="/"
-            className="text-xs text-primary underline underline-offset-2"
-          >
+          <a href="/" className="text-xs text-primary underline underline-offset-2">
             Volver al inicio
           </a>
         </>
